@@ -3,6 +3,7 @@ import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
 import BottomSheet, { BottomSheetBackdrop, BottomSheetView } from '@gorhom/bottom-sheet';
 import * as DocumentPicker from 'expo-document-picker';
 import { Image as ExpoImage } from 'expo-image';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import { useShareIntentContext } from 'expo-share-intent';
@@ -78,9 +79,6 @@ export default function App() {
   // Refs to prevent duplicate processing of share intents
   const processingShareIntent = useRef(false);
   const lastProcessedShareIntentId = useRef<string | null>(null);
-  
-  // TEST MODE: URL input for browser testing
-  const [testUrlInput, setTestUrlInput] = useState('');
 
   // Fetch vouchers from API
   const fetchVouchers = useCallback(async () => {
@@ -262,74 +260,39 @@ export default function App() {
     try {
       console.log('Step 1: Downloading content from URL:', url);
       
-      // Step 1: Download the content from the URL
-      const downloadResponse = await fetch(url);
+      // Send URL directly to backend - backend will download and process it
+      const response = await fetch(`${API_URL}/api/vouchers/upload`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url }),
+      });
       
-      if (!downloadResponse.ok) {
-        const errorMsg = `Failed to download from URL (HTTP ${downloadResponse.status}: ${downloadResponse.statusText})`;
-        console.error(errorMsg);
-        throw new Error(errorMsg);
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Upload failed with status:', response.status, errorText);
+        throw new Error(`Upload failed: ${errorText}`);
       }
-      
-      // Get content type and size
-      const contentType = downloadResponse.headers.get('content-type') || 'application/octet-stream';
-      console.log('Content-Type:', contentType);
-      
-      const blob = await downloadResponse.blob();
-      console.log('Downloaded blob size:', blob.size, 'bytes');
-      
-      if (blob.size === 0) {
-        throw new Error('Downloaded content is empty');
+
+      const result = await response.json();
+      console.log('Upload and analysis complete:', result);
+
+      if (result.success && result.voucher) {
+        return result.voucher as Voucher;
+      } else {
+        throw new Error('Invalid response from server');
       }
-      
-      // Generate a filename based on URL or content type
-      let filename = 'shared-content';
-      try {
-        const urlPath = new URL(url).pathname;
-        const urlFilename = urlPath.split('/').pop();
-        if (urlFilename && urlFilename.includes('.')) {
-          filename = urlFilename;
-        } else {
-          // Infer extension from content type
-          const extension = contentType.split('/').pop()?.split(';')[0];
-          if (extension) {
-            filename = `shared-content.${extension}`;
-          }
-        }
-      } catch (urlError) {
-        console.warn('Failed to parse URL for filename:', urlError);
-        // If URL parsing fails, use content type
-        const extension = contentType.split('/').pop()?.split(';')[0];
-        if (extension && extension !== 'octet-stream') {
-          filename = `shared-content.${extension}`;
-        }
-      }
-      
-      console.log('Step 2: Generated filename:', filename, 'with type:', contentType);
-      
-      // Step 2: Create a local blob URL (works on both web and native)
-      const localBlobUrl = URL.createObjectURL(blob);
-      console.log('Step 3: Created local blob URL:', localBlobUrl);
-      
-      // Step 3: Upload using the standard upload flow
-      console.log('Step 4: Starting upload to API...');
-      const voucher = await uploadToAPI(localBlobUrl, filename, contentType);
-      
-      // Clean up the blob URL
-      URL.revokeObjectURL(localBlobUrl);
-      console.log('Step 5: Upload complete! Voucher ID:', voucher.id);
-      
-      return voucher;
     } catch (error) {
       console.error('Error in downloadAndUploadURL:', error);
       // Re-throw with more context
       if (error instanceof Error) {
-        throw new Error(`Download/Upload failed: ${error.message}`);
+        throw new Error(`Upload failed: ${error.message}`);
       } else {
-        throw new Error('Download/Upload failed: Unknown error');
+        throw new Error('Upload failed: Unknown error');
       }
     }
-  }, [uploadToAPI]);
+  }, []);
 
   const uploadFiles = useCallback(async (files: Attachment[]) => {
     if (files.length === 0) return;
@@ -463,6 +426,32 @@ export default function App() {
     }
   }, [hasShareIntent, shareIntent, error, resetShareIntent, uploadFiles, downloadAndUploadURL, startProgressAnimation, completeProgress, resetProgress]);
 
+  // Convert images to JPEG for better compatibility and smaller file sizes
+  const convertImageToJPEG = useCallback(async (uri: string, originalName: string) => {
+    try {
+      console.log('Converting image to JPEG:', uri);
+      const manipResult = await ImageManipulator.manipulateAsync(
+        uri,
+        [], // no transformations, just format conversion
+        {
+          compress: 0.8, // 80% quality - good balance between quality and file size
+          format: ImageManipulator.SaveFormat.JPEG,
+        }
+      );
+      
+      // Generate new filename with .jpg extension
+      const nameWithoutExt = originalName.replace(/\.[^/.]+$/, '');
+      const newName = `${nameWithoutExt}.jpg`;
+      
+      console.log('Image converted successfully:', manipResult.uri);
+      return { uri: manipResult.uri, name: newName };
+    } catch (error) {
+      console.error('Failed to convert image:', error);
+      // If conversion fails, return original
+      return { uri, name: originalName };
+    }
+  }, []);
+
   const handleTakePhoto = useCallback(async () => {
     const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
 
@@ -488,15 +477,28 @@ export default function App() {
     });
 
     if (!result.canceled && result.assets && result.assets.length > 0) {
-      const newAttachments: Attachment[] = result.assets.map((asset) => ({
+      // Convert images to JPEG format
+      const convertedAssets = await Promise.all(
+        result.assets.map(async (asset) => {
+          const originalName = asset.uri.split('/').pop() ?? 'photo.jpg';
+          const converted = await convertImageToJPEG(asset.uri, originalName);
+          return {
+            ...asset,
+            uri: converted.uri,
+            name: converted.name,
+          };
+        })
+      );
+
+      const newAttachments: Attachment[] = convertedAssets.map((asset) => ({
         id: `${Date.now()}-${asset.uri}`,
-        name: asset.uri.split('/').pop() ?? 'photo.jpg',
+        name: asset.name,
         uri: asset.uri,
-        type: asset.type ?? 'image',
+        type: 'image/jpeg',
       }));
       await uploadFiles(newAttachments);
     }
-  }, [uploadFiles]);
+  }, [uploadFiles, convertImageToJPEG]);
 
   const handleChoosePhoto = useCallback(async () => {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -524,15 +526,40 @@ export default function App() {
     });
 
     if (!result.canceled && result.assets && result.assets.length > 0) {
-      const newAttachments: Attachment[] = result.assets.map((asset) => ({
+      // Convert images to JPEG, leave videos as-is
+      const convertedAssets = await Promise.all(
+        result.assets.map(async (asset) => {
+          const originalName = asset.uri.split('/').pop() ?? 'unnamed';
+          
+          // Only convert images, not videos
+          if (asset.type === 'image') {
+            const converted = await convertImageToJPEG(asset.uri, originalName);
+            return {
+              ...asset,
+              uri: converted.uri,
+              name: converted.name,
+              type: 'image/jpeg',
+            };
+          }
+          
+          // Return videos unchanged
+          return {
+            ...asset,
+            name: originalName,
+            type: asset.type ?? 'video',
+          };
+        })
+      );
+
+      const newAttachments: Attachment[] = convertedAssets.map((asset) => ({
         id: `${Date.now()}-${asset.uri}`,
-        name: asset.uri.split('/').pop() ?? 'unnamed',
+        name: asset.name,
         uri: asset.uri,
         type: asset.type ?? 'image',
       }));
       await uploadFiles(newAttachments);
     }
-  }, [uploadFiles]);
+  }, [uploadFiles, convertImageToJPEG]);
 
   const handleChooseFile = useCallback(async () => {
     try {
@@ -606,49 +633,31 @@ export default function App() {
     if (selectedPhotoIds.size > 0) {
       // Convert selected photo IDs to attachments
       const selectedPhotosArray = recentPhotos.filter(photo => selectedPhotoIds.has(photo.id));
-      const newAttachments: Attachment[] = selectedPhotosArray.map(photo => ({
+      
+      // Convert images to JPEG format
+      const convertedPhotos = await Promise.all(
+        selectedPhotosArray.map(async (photo) => {
+          const converted = await convertImageToJPEG(photo.uri, photo.filename);
+          return {
+            ...photo,
+            uri: converted.uri,
+            filename: converted.name,
+          };
+        })
+      );
+      
+      const newAttachments: Attachment[] = convertedPhotos.map(photo => ({
         id: photo.id,
         name: photo.filename,
         uri: photo.uri,
-        type: 'image',
+        type: 'image/jpeg',
       }));
       closePickerModal();
       await uploadFiles(newAttachments);
     } else {
       closePickerModal();
     }
-  }, [selectedPhotoIds, recentPhotos, closePickerModal, uploadFiles]);
-
-  // TEST MODE: Handle URL test
-  const handleTestUrl = useCallback(async () => {
-    if (!testUrlInput.trim()) {
-      Alert.alert('Error', 'Please enter a URL');
-      return;
-    }
-
-    const url = testUrlInput.trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      Alert.alert('Error', 'Please enter a valid URL starting with http:// or https://');
-      return;
-    }
-
-    setIsUploading(true);
-    startProgressAnimation();
-    
-    try {
-      const voucher = await downloadAndUploadURL(url);
-      completeProgress();
-      setVouchers((prev) => [voucher, ...prev]); 
-      Alert.alert('Success', 'URL downloaded and uploaded successfully!');
-      setTestUrlInput(''); // Clear input on success
-    } catch (err) {
-      resetProgress();
-      console.error('Failed to download and upload URL:', err);
-      Alert.alert('Error', `Failed: ${(err as Error).message}`);
-    } finally {
-      setIsUploading(false);
-    }
-  }, [testUrlInput, downloadAndUploadURL, startProgressAnimation, completeProgress, resetProgress]);
+  }, [selectedPhotoIds, recentPhotos, closePickerModal, uploadFiles, convertImageToJPEG]);
 
   const handleOptionPress = useCallback(
     (action: () => void | Promise<void>) => {
@@ -800,31 +809,6 @@ export default function App() {
             ]}
             keyboardShouldPersistTaps="handled">
             <Text style={styles.headerText}>Your deals</Text>
-
-            {/* TEST MODE: URL Input (only on web) */}
-            {Platform.OS === 'web' && (
-              <View style={styles.testUrlContainer}>
-                <Text style={styles.testUrlLabel}>TEST: Download & Upload URL</Text>
-                <View style={styles.testUrlInputRow}>
-                  <TextInput
-                    style={styles.testUrlInput}
-                    placeholder="Paste URL here to test (e.g., https://example.com/image.jpg)"
-                    placeholderTextColor="rgba(255, 255, 255, 0.4)"
-                    value={testUrlInput}
-                    onChangeText={setTestUrlInput}
-                    editable={!isUploading}
-                  />
-                  <TouchableOpacity 
-                    style={[styles.testUrlButton, isUploading && styles.testUrlButtonDisabled]} 
-                    onPress={handleTestUrl}
-                    disabled={isUploading}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.testUrlButtonText}>Test</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
 
             {isUploading && (
               <View style={styles.uploadingIndicator}>
@@ -1341,52 +1325,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#010101',
-  },
-  // TEST MODE styles
-  testUrlContainer: {
-    marginBottom: 24,
-    padding: 16,
-    backgroundColor: 'rgba(0, 122, 255, 0.1)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 122, 255, 0.3)',
-  },
-  testUrlLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#007AFF',
-    marginBottom: 12,
-    letterSpacing: 0.5,
-  },
-  testUrlInputRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  testUrlInput: {
-    flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    fontSize: 14,
-    color: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  testUrlButton: {
-    backgroundColor: '#007AFF',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  testUrlButtonDisabled: {
-    backgroundColor: 'rgba(0, 122, 255, 0.3)',
-  },
-  testUrlButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
   },
 });
