@@ -1,0 +1,1392 @@
+import { LiquidGlassView, isLiquidGlassSupported } from '@callstack/liquid-glass';
+import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
+import BottomSheet, { BottomSheetBackdrop, BottomSheetView } from '@gorhom/bottom-sheet';
+import * as DocumentPicker from 'expo-document-picker';
+import { Image as ExpoImage } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
+import { useShareIntentContext } from 'expo-share-intent';
+import { Camera, FilePlus, ImageUp, Plus, Search } from 'lucide-react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ListRenderItem } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Easing,
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
+  PlatformColor,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+const API_URL = 'https://dealsafe-backend.vercel.app';
+
+type UsageGuide = {
+  raw: string;
+  steps: string[];
+};
+
+type Voucher = {
+  id: number;
+  file_url: string;
+  file_type: string;
+  original_filename: string;
+  file_size: number;
+  number_of_persons: number | null;
+  redemption_method: string | null;
+  redemption_value: string | null;
+  description: string | null;
+  expires_at: string | null;
+  is_valid: boolean;
+  rejection_reason: string | null;
+  confidence_score: number | null;
+  usage_guide: UsageGuide | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type Attachment = {
+  id: string;
+  name: string;
+  uri: string;
+  type: string;
+};
+
+export default function App() {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<string>>(new Set());
+  const [recentPhotos, setRecentPhotos] = useState<MediaLibrary.Asset[]>([]);
+  const [vouchers, setVouchers] = useState<Voucher[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isLoadingVouchers, setIsLoadingVouchers] = useState(true);
+  const [expandedVoucherId, setExpandedVoucherId] = useState<number | null>(null);
+  const bottomSheetRef = useRef<BottomSheet>(null);
+  const snapPoints = useMemo(() => ['50%'], []);
+  const insets = useSafeAreaInsets();
+  const uploadProgress = useRef(new Animated.Value(0)).current;
+  const { hasShareIntent, shareIntent, resetShareIntent, error } = useShareIntentContext();
+  
+  // Refs to prevent duplicate processing of share intents
+  const processingShareIntent = useRef(false);
+  const lastProcessedShareIntentId = useRef<string | null>(null);
+  
+  // TEST MODE: URL input for browser testing
+  const [testUrlInput, setTestUrlInput] = useState('');
+
+  // Fetch vouchers from API
+  const fetchVouchers = useCallback(async () => {
+    try {
+      setIsLoadingVouchers(true);
+      const response = await fetch(`${API_URL}/api/vouchers?limit=100`);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch vouchers');
+      }
+
+      const data = await response.json();
+      
+      if (data.success && Array.isArray(data.vouchers)) {
+        setVouchers(data.vouchers);
+      }
+    } catch (error) {
+      console.error('Error fetching vouchers:', error);
+      // Don't show alert on initial load failure - just log it
+    } finally {
+      setIsLoadingVouchers(false);
+    }
+  }, []);
+
+  // Load vouchers on mount
+  useEffect(() => {
+    fetchVouchers();
+  }, [fetchVouchers]);
+
+  const startProgressAnimation = useCallback(() => {
+    uploadProgress.setValue(0);
+    // Animate to 95% over 15 seconds with ease-out (fast start, slow end)
+    Animated.timing(uploadProgress, {
+      toValue: 95,
+      duration: 15000,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: false,
+    }).start();
+  }, [uploadProgress]);
+
+  const completeProgress = useCallback(() => {
+    // Quickly animate to 100%
+    Animated.timing(uploadProgress, {
+      toValue: 100,
+      duration: 300,
+      useNativeDriver: false,
+    }).start();
+  }, [uploadProgress]);
+
+  const resetProgress = useCallback(() => {
+    uploadProgress.setValue(0);
+  }, [uploadProgress]);
+
+  const uploadToAPI = useCallback(async (fileUri: string, fileName: string, mimeType?: string) => {
+    try {
+      // Determine the correct MIME type
+      let contentType = mimeType || 'image/jpeg';
+      
+      // Fix MIME type if it's generic
+      if (contentType === 'image' || !contentType.includes('/')) {
+        const extension = fileName.toLowerCase().split('.').pop();
+        switch (extension) {
+          case 'jpg':
+          case 'jpeg':
+            contentType = 'image/jpeg';
+            break;
+          case 'png':
+            contentType = 'image/png';
+            break;
+          case 'gif':
+            contentType = 'image/gif';
+            break;
+          case 'webp':
+            contentType = 'image/webp';
+            break;
+          case 'pdf':
+            contentType = 'application/pdf';
+            break;
+          case 'txt':
+            contentType = 'text/plain';
+            break;
+          default:
+            contentType = 'application/octet-stream';
+        }
+      }
+
+      console.log('Starting upload:', { 
+        platform: Platform.OS, 
+        uri: fileUri, 
+        name: fileName, 
+        type: contentType 
+      });
+
+      const formData = new FormData();
+
+      // Different handling for web vs native
+      if (Platform.OS === 'web') {
+        // On web, we need to fetch the blob first and create a proper File object
+        try {
+          const response = await fetch(fileUri);
+          const blob = await response.blob();
+          
+          // Create a proper File object (not just a blob)
+          const file = new File([blob], fileName, { type: contentType });
+          formData.append('file', file);
+          
+          console.log('Web: Created File object:', {
+            name: file.name,
+            size: file.size,
+            type: file.type
+          });
+        } catch (error) {
+          console.error('Failed to fetch blob from URI:', error);
+          throw new Error('Failed to process file for upload');
+        }
+      } else {
+        // On native (iOS/Android), use the URI structure
+        const file: any = {
+          uri: fileUri,
+          name: fileName,
+          type: contentType,
+        };
+        formData.append('file', file);
+        console.log('Native: Appending file object to formData');
+      }
+
+      // Step 1: Upload file to blob storage
+      console.log('Step 1: Uploading file to blob storage...');
+      const uploadResponse = await fetch(`${API_URL}/api/vouchers/upload-file`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!uploadResponse.ok) {
+        const errorText = await uploadResponse.text();
+        console.error('Upload failed with status:', uploadResponse.status, errorText);
+        throw new Error(`Upload failed: ${errorText}`);
+      }
+
+      const uploadResult = await uploadResponse.json();
+      console.log('File uploaded:', uploadResult.file);
+
+      // Step 2: Analyze the uploaded file with AI
+      console.log('Step 2: Analyzing file with AI...');
+      const analyzeResponse = await fetch(`${API_URL}/api/vouchers/analyze`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fileUrl: uploadResult.file.url,
+          filename: uploadResult.file.filename,
+          mimeType: uploadResult.file.mimeType,
+          size: uploadResult.file.size,
+        }),
+      });
+
+      if (!analyzeResponse.ok) {
+        const errorText = await analyzeResponse.text();
+        console.error('Analysis failed with status:', analyzeResponse.status, errorText);
+        throw new Error(`Analysis failed: ${errorText}`);
+      }
+
+      const analyzeResult = await analyzeResponse.json();
+      console.log('Analysis complete:', analyzeResult.voucher);
+
+      if (analyzeResult.success && analyzeResult.voucher) {
+        return analyzeResult.voucher as Voucher;
+      } else {
+        throw new Error('Invalid response from server');
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      throw error;
+    }
+  }, []);
+
+  const downloadAndUploadURL = useCallback(async (url: string) => {
+    try {
+      console.log('Step 1: Downloading content from URL:', url);
+      
+      // Step 1: Download the content from the URL
+      const downloadResponse = await fetch(url);
+      
+      if (!downloadResponse.ok) {
+        const errorMsg = `Failed to download from URL (HTTP ${downloadResponse.status}: ${downloadResponse.statusText})`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+      
+      // Get content type and size
+      const contentType = downloadResponse.headers.get('content-type') || 'application/octet-stream';
+      console.log('Content-Type:', contentType);
+      
+      const blob = await downloadResponse.blob();
+      console.log('Downloaded blob size:', blob.size, 'bytes');
+      
+      if (blob.size === 0) {
+        throw new Error('Downloaded content is empty');
+      }
+      
+      // Generate a filename based on URL or content type
+      let filename = 'shared-content';
+      try {
+        const urlPath = new URL(url).pathname;
+        const urlFilename = urlPath.split('/').pop();
+        if (urlFilename && urlFilename.includes('.')) {
+          filename = urlFilename;
+        } else {
+          // Infer extension from content type
+          const extension = contentType.split('/').pop()?.split(';')[0];
+          if (extension) {
+            filename = `shared-content.${extension}`;
+          }
+        }
+      } catch (urlError) {
+        console.warn('Failed to parse URL for filename:', urlError);
+        // If URL parsing fails, use content type
+        const extension = contentType.split('/').pop()?.split(';')[0];
+        if (extension && extension !== 'octet-stream') {
+          filename = `shared-content.${extension}`;
+        }
+      }
+      
+      console.log('Step 2: Generated filename:', filename, 'with type:', contentType);
+      
+      // Step 2: Create a local blob URL (works on both web and native)
+      const localBlobUrl = URL.createObjectURL(blob);
+      console.log('Step 3: Created local blob URL:', localBlobUrl);
+      
+      // Step 3: Upload using the standard upload flow
+      console.log('Step 4: Starting upload to API...');
+      const voucher = await uploadToAPI(localBlobUrl, filename, contentType);
+      
+      // Clean up the blob URL
+      URL.revokeObjectURL(localBlobUrl);
+      console.log('Step 5: Upload complete! Voucher ID:', voucher.id);
+      
+      return voucher;
+    } catch (error) {
+      console.error('Error in downloadAndUploadURL:', error);
+      // Re-throw with more context
+      if (error instanceof Error) {
+        throw new Error(`Download/Upload failed: ${error.message}`);
+      } else {
+        throw new Error('Download/Upload failed: Unknown error');
+      }
+    }
+  }, [uploadToAPI]);
+
+  const uploadFiles = useCallback(async (files: Attachment[]) => {
+    if (files.length === 0) return;
+
+    setIsUploading(true);
+    startProgressAnimation();
+    const uploadedVouchers: Voucher[] = [];
+    const errors: string[] = [];
+
+    try {
+      for (const file of files) {
+        try {
+          const voucher = await uploadToAPI(file.uri, file.name, file.type);
+          uploadedVouchers.push(voucher);
+        } catch (error) {
+          errors.push(`${file.name}: ${(error as Error).message}`);
+        }
+      }
+
+      if (uploadedVouchers.length > 0) {
+        // Complete the progress bar
+        completeProgress();
+        
+        // Refetch all vouchers to get the latest from the API
+        await fetchVouchers();
+        
+        Alert.alert(
+          'Success',
+          `Successfully uploaded and analyzed ${uploadedVouchers.length} ${uploadedVouchers.length === 1 ? 'voucher' : 'vouchers'}!`
+        );
+      }
+
+      if (errors.length > 0) {
+        Alert.alert(
+          'Upload Errors',
+          `Some files failed to upload:\n\n${errors.join('\n')}`
+        );
+      }
+    } finally {
+      setTimeout(() => {
+        setIsUploading(false);
+        resetProgress();
+      }, 500);
+    }
+  }, [uploadToAPI, fetchVouchers, startProgressAnimation, completeProgress, resetProgress]);
+
+  // Handle shared files/URLs from other apps
+  useEffect(() => {
+    console.log('Share Intent State:', { hasShareIntent, shareIntent, error });
+    
+    // Early return if already processing or no share intent
+    if (!hasShareIntent || !shareIntent || processingShareIntent.current) {
+      if (error) {
+        console.error('Share intent error:', error);
+        Alert.alert('Share Error', `Failed to receive shared content: ${error}`);
+      }
+      return;
+    }
+    
+    // Create a unique ID for this share intent to prevent duplicate processing
+    const shareIntentId = JSON.stringify({
+      text: shareIntent.text,
+      webUrl: shareIntent.webUrl,
+      files: shareIntent.files?.map((f: any) => f.path || f.uri),
+      timestamp: Date.now()
+    });
+    
+    // Check if we've already processed this exact share intent
+    if (lastProcessedShareIntentId.current === shareIntentId) {
+      console.log('Share intent already processed, skipping');
+      return;
+    }
+    
+    // Mark as processing and store the ID
+    processingShareIntent.current = true;
+    lastProcessedShareIntentId.current = shareIntentId;
+    
+    // Reset share intent immediately to prevent re-triggering
+    resetShareIntent();
+    
+    // Handle shared URLs or text
+    if (shareIntent.text || shareIntent.webUrl) {
+      const sharedUrl = shareIntent.webUrl || shareIntent.text;
+      console.log('Received shared URL:', sharedUrl);
+      
+      // Check if it's a valid URL
+      if (sharedUrl && (sharedUrl.startsWith('http://') || sharedUrl.startsWith('https://'))) {
+        setIsUploading(true);
+        startProgressAnimation();
+        
+        downloadAndUploadURL(sharedUrl)
+          .then((voucher) => {
+            completeProgress();
+            setVouchers((prev) => [voucher, ...prev]); 
+            Alert.alert('Success', 'Content downloaded and uploaded successfully!');
+          })
+          .catch((err) => {
+            resetProgress();
+            console.error('Failed to download and upload URL:', err);
+            Alert.alert('Error', 'Failed to download and upload the shared URL. Please try again.');
+          })
+          .finally(() => {
+            setIsUploading(false);
+            processingShareIntent.current = false;
+          });
+      } else {
+        Alert.alert('Invalid URL', 'The shared content is not a valid URL.');
+        processingShareIntent.current = false;
+      }
+    }
+    // Handle shared files
+    else if (shareIntent.files && shareIntent.files.length > 0) {
+      console.log('Received shared files:', JSON.stringify(shareIntent.files, null, 2));
+      
+      const attachments: Attachment[] = shareIntent.files.map((file: any, index: number) => ({
+        id: `${Date.now()}-${index}`,
+        name: file.fileName || file.name || `shared-file-${index}`,
+        uri: file.path || file.uri || '',
+        type: file.mimeType || file.type || 'application/octet-stream',
+      }));
+
+      console.log('Processed attachments:', attachments);
+
+      // Upload the shared files
+      uploadFiles(attachments)
+        .finally(() => {
+          processingShareIntent.current = false;
+        });
+    } else {
+      processingShareIntent.current = false;
+    }
+  }, [hasShareIntent, shareIntent, error, resetShareIntent, uploadFiles, downloadAndUploadURL, startProgressAnimation, completeProgress, resetProgress]);
+
+  const handleTakePhoto = useCallback(async () => {
+    const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+
+    if (permissionResult.granted === false) {
+      if (permissionResult.canAskAgain === false) {
+        Alert.alert(
+          'Camera Permission Required',
+          'Camera access is needed to take photos. Please enable it in your device settings.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ]
+        );
+      } else {
+        Alert.alert('Permission required', 'Camera permission is required to take photos');
+      }
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      quality: 1,
+    });
+
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      const newAttachments: Attachment[] = result.assets.map((asset) => ({
+        id: `${Date.now()}-${asset.uri}`,
+        name: asset.uri.split('/').pop() ?? 'photo.jpg',
+        uri: asset.uri,
+        type: asset.type ?? 'image',
+      }));
+      await uploadFiles(newAttachments);
+    }
+  }, [uploadFiles]);
+
+  const handleChoosePhoto = useCallback(async () => {
+    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (permissionResult.granted === false) {
+      if (permissionResult.canAskAgain === false) {
+        Alert.alert(
+          'Photo Library Permission Required',
+          'Photo library access is needed to select photos. Please enable it in your device settings.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ]
+        );
+      } else {
+        Alert.alert('Permission required', 'Media library permission is required to choose photos');
+      }
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images', 'videos'],
+      allowsMultipleSelection: true,
+      quality: 1,
+    });
+
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      const newAttachments: Attachment[] = result.assets.map((asset) => ({
+        id: `${Date.now()}-${asset.uri}`,
+        name: asset.uri.split('/').pop() ?? 'unnamed',
+        uri: asset.uri,
+        type: asset.type ?? 'image',
+      }));
+      await uploadFiles(newAttachments);
+    }
+  }, [uploadFiles]);
+
+  const handleChooseFile = useCallback(async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        multiple: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const mapped: Attachment[] = result.assets.map((asset) => ({
+          id: `${asset.size ?? Date.now()}-${asset.uri}`,
+          name: asset.name ?? 'unnamed',
+          uri: asset.uri,
+          type: asset.mimeType ?? 'application/octet-stream',
+        }));
+        await uploadFiles(mapped);
+      }
+    } catch (error) {
+      Alert.alert('File picker error', (error as Error).message);
+    }
+  }, [uploadFiles]);
+
+  const loadRecentPhotos = useCallback(async () => {
+    try {
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      
+      if (status !== 'granted') {
+        Alert.alert('Permission required', 'Media library permission is required to show recent photos');
+        return;
+      }
+
+      const result = await MediaLibrary.getAssetsAsync({
+        first: 20,
+        mediaType: 'photo',
+        sortBy: MediaLibrary.SortBy.creationTime,
+      });
+
+      setRecentPhotos(result.assets);
+    } catch (error) {
+      // Silently handle error in production
+      if (__DEV__) {
+        console.error('Error loading recent photos:', error);
+      }
+    }
+  }, []);
+
+  const openPickerSheet = useCallback(() => {
+    setSelectedPhotoIds(new Set());
+    bottomSheetRef.current?.expand();
+    loadRecentPhotos();
+  }, [loadRecentPhotos]);
+
+  const closePickerModal = useCallback(() => {
+    bottomSheetRef.current?.close();
+    setSelectedPhotoIds(new Set());
+  }, []);
+
+  const togglePhotoSelection = useCallback((photoId: string) => {
+    setSelectedPhotoIds((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(photoId)) {
+        newSet.delete(photoId);
+      } else {
+        newSet.add(photoId);
+      }
+      return newSet;
+    });
+  }, []);
+
+  const handleUploadSelected = useCallback(async () => {
+    if (selectedPhotoIds.size > 0) {
+      // Convert selected photo IDs to attachments
+      const selectedPhotosArray = recentPhotos.filter(photo => selectedPhotoIds.has(photo.id));
+      const newAttachments: Attachment[] = selectedPhotosArray.map(photo => ({
+        id: photo.id,
+        name: photo.filename,
+        uri: photo.uri,
+        type: 'image',
+      }));
+      closePickerModal();
+      await uploadFiles(newAttachments);
+    } else {
+      closePickerModal();
+    }
+  }, [selectedPhotoIds, recentPhotos, closePickerModal, uploadFiles]);
+
+  // TEST MODE: Handle URL test
+  const handleTestUrl = useCallback(async () => {
+    if (!testUrlInput.trim()) {
+      Alert.alert('Error', 'Please enter a URL');
+      return;
+    }
+
+    const url = testUrlInput.trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      Alert.alert('Error', 'Please enter a valid URL starting with http:// or https://');
+      return;
+    }
+
+    setIsUploading(true);
+    startProgressAnimation();
+    
+    try {
+      const voucher = await downloadAndUploadURL(url);
+      completeProgress();
+      setVouchers((prev) => [voucher, ...prev]); 
+      Alert.alert('Success', 'URL downloaded and uploaded successfully!');
+      setTestUrlInput(''); // Clear input on success
+    } catch (err) {
+      resetProgress();
+      console.error('Failed to download and upload URL:', err);
+      Alert.alert('Error', `Failed: ${(err as Error).message}`);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [testUrlInput, downloadAndUploadURL, startProgressAnimation, completeProgress, resetProgress]);
+
+  const handleOptionPress = useCallback(
+    (action: () => void | Promise<void>) => {
+      closePickerModal();
+      setTimeout(() => {
+        void action();
+      }, 300);
+    },
+    [closePickerModal]
+  );
+
+  const renderBackdrop = useCallback(
+    (props: BottomSheetBackdropProps) => (
+      <BottomSheetBackdrop {...props} disappearsOnIndex={-1} appearsOnIndex={0} opacity={0.85} pressBehavior="close" />
+    ),
+    []
+  );
+
+  const renderBackground = useCallback(
+    () => (
+      <LiquidGlassView
+        style={[
+          styles.bottomSheetBackground,
+          !isLiquidGlassSupported && styles.bottomSheetBackgroundFallback,
+        ]}
+        effect="clear"
+        interactive={false}
+        colorScheme="dark"
+      />
+    ),
+    []
+  );
+
+  const formatDate = useCallback((dateString: string | null) => {
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('da-DK', { 
+      day: 'numeric', 
+      month: 'short', 
+      year: 'numeric' 
+    });
+  }, []);
+
+  const toggleVoucherExpansion = useCallback((voucherId: number) => {
+    setExpandedVoucherId((prev) => (prev === voucherId ? null : voucherId));
+  }, []);
+
+  const openVoucherUrl = useCallback(async (url: string) => {
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (canOpen) {
+        await Linking.openURL(url);
+      } else {
+        Alert.alert('Error', 'Cannot open this voucher');
+      }
+    } catch {
+      Alert.alert('Error', 'Failed to open voucher');
+    }
+  }, []);
+
+  const renderVoucher = useCallback<ListRenderItem<Voucher>>(({ item }) => {
+    const redemptionText = item.redemption_value 
+      ? `${item.redemption_method?.toUpperCase()}: ${item.redemption_value}`
+      : item.redemption_method?.toUpperCase() || 'N/A';
+    
+    const isExpanded = expandedVoucherId === item.id;
+
+    return (
+      <TouchableOpacity 
+        style={styles.dealCard} 
+        onPress={() => toggleVoucherExpansion(item.id)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.voucherHeader}>
+          <Text style={styles.dealTitle} numberOfLines={isExpanded ? undefined : 2}>
+            {item.description || item.original_filename}
+          </Text>
+        </View>
+
+        <View style={styles.dealMeta}>
+          <View style={styles.dealMetaBlock}>
+            <Text style={styles.dealMetaLabel}>Persons</Text>
+            <Text style={styles.dealMetaValue}>
+              {item.number_of_persons || 'N/A'}
+            </Text>
+          </View>
+
+          <View style={styles.dealMetaBlock}>
+            <Text style={[styles.dealMetaLabel, styles.alignRight]}>Redemption</Text>
+            <Text style={[styles.dealMetaValue, styles.alignRight]} numberOfLines={1}>
+              {redemptionText}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.dealMeta}>
+          <View style={styles.dealMetaBlock}>
+            <Text style={styles.dealMetaLabel}>Added</Text>
+            <Text style={styles.dealMetaValue}>{formatDate(item.created_at)}</Text>
+          </View>
+
+          <View style={styles.dealMetaBlock}>
+            <Text style={[styles.dealMetaLabel, styles.alignRight]}>Expiry date</Text>
+            <Text style={styles.dealMetaValue}>{formatDate(item.expires_at)}</Text>
+          </View>
+        </View>
+
+        {isExpanded && (
+          <>
+            {item.usage_guide && item.usage_guide.steps.length > 0 && (
+              <View style={styles.usageGuide}>
+                <Text style={styles.usageGuideTitle}>How to redeem:</Text>
+                {item.usage_guide.steps.map((step, index) => (
+                  <Text key={index} style={styles.usageGuideStep}>
+                    {index + 1}. {step}
+                  </Text>
+                ))}
+              </View>
+            )}
+
+            <TouchableOpacity 
+              style={styles.showVoucherButton}
+              onPress={(e) => {
+                e.stopPropagation();
+                openVoucherUrl(item.file_url);
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.showVoucherButtonText}>Show voucher</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </TouchableOpacity>
+    );
+  }, [formatDate, expandedVoucherId, toggleVoucherExpansion, openVoucherUrl]);
+
+  return (
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#010101" translucent={false} />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardAvoidingView}
+        keyboardVerticalOffset={0}>
+        <View style={styles.innerContainer}>
+          <ScrollView
+            contentContainerStyle={[
+              styles.contentContainer,
+              { paddingTop: insets.top + 32 }
+            ]}
+            keyboardShouldPersistTaps="handled">
+            <Text style={styles.headerText}>Your deals</Text>
+
+            {/* TEST MODE: URL Input (only on web) */}
+            {Platform.OS === 'web' && (
+              <View style={styles.testUrlContainer}>
+                <Text style={styles.testUrlLabel}>TEST: Download & Upload URL</Text>
+                <View style={styles.testUrlInputRow}>
+                  <TextInput
+                    style={styles.testUrlInput}
+                    placeholder="Paste URL here to test (e.g., https://example.com/image.jpg)"
+                    placeholderTextColor="rgba(255, 255, 255, 0.4)"
+                    value={testUrlInput}
+                    onChangeText={setTestUrlInput}
+                    editable={!isUploading}
+                  />
+                  <TouchableOpacity 
+                    style={[styles.testUrlButton, isUploading && styles.testUrlButtonDisabled]} 
+                    onPress={handleTestUrl}
+                    disabled={isUploading}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.testUrlButtonText}>Test</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {isUploading && (
+              <View style={styles.uploadingIndicator}>
+                <View style={styles.progressBarContainer}>
+                  <Animated.View 
+                    style={[
+                      styles.progressBarFill,
+                      {
+                        width: uploadProgress.interpolate({
+                          inputRange: [0, 100],
+                          outputRange: ['0%', '100%'],
+                        }),
+                      },
+                    ]} 
+                  />
+                </View>
+                <Text style={styles.uploadingText}>Uploading and analyzing...</Text>
+              </View>
+            )}
+
+
+            {isLoadingVouchers && vouchers.length === 0 && (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#FFFFFF" />
+                <Text style={styles.loadingText}>Loading vouchers...</Text>
+              </View>
+            )}
+
+            {!isLoadingVouchers && vouchers.length === 0 && (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyStateTitle}>No vouchers yet</Text>
+                <Text style={styles.emptyStateText}>
+                  Tap the + button below to upload your first voucher
+                </Text>
+              </View>
+            )}
+
+            {vouchers.length > 0 && (
+              <View style={styles.vouchersSection}>
+                {vouchers.map((voucher) => (
+                  <View key={voucher.id} style={styles.voucherWrapper}>
+                    {renderVoucher({ item: voucher, index: 0, separators: {} as any })}
+                  </View>
+                ))}
+              </View>
+            )}
+          </ScrollView>
+
+          <LiquidGlassView
+            effect="clear"
+            interactive={false}
+            colorScheme="dark"
+            style={[
+              styles.bottomBar,
+              !isLiquidGlassSupported && styles.bottomBarFallback,
+            ]}>
+            <TouchableOpacity style={styles.addButton} onPress={openPickerSheet} activeOpacity={0.8}>
+              <Plus size={16} color="#010101" strokeWidth={2.5} />
+            </TouchableOpacity>
+
+            <View style={styles.searchBar}>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search deal"
+                placeholderTextColor={'rgba(0, 0, 0, 0.8)'}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+              <Search 
+                size={20} 
+                color={ 'rgba(0, 0, 0, 0.8)'} 
+                strokeWidth={2}
+              />
+            </View>
+          </LiquidGlassView>
+        </View>
+      </KeyboardAvoidingView>
+
+        <View style={[styles.bottomSheetWrapper, { paddingBottom: insets.bottom + 8 }]} pointerEvents="box-none">
+          <BottomSheet
+            ref={bottomSheetRef}
+            index={-1}
+            snapPoints={snapPoints}
+            enablePanDownToClose
+            backdropComponent={renderBackdrop}
+            backgroundComponent={renderBackground}
+            handleIndicatorStyle={styles.bottomSheetIndicator}>
+            <BottomSheetView style={styles.bottomSheetContent}>
+            <View style={styles.recentPhotosSection}>
+            <TouchableOpacity style={styles.openAllPhotos} onPress={() => handleOptionPress(handleChoosePhoto)}>
+                <Text style={styles.openAllPhotosText}>Open all photos</Text>
+              </TouchableOpacity>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+                <TouchableOpacity style={styles.addPhotoButton} onPress={() => handleOptionPress(handleChoosePhoto)}>
+                  <Plus size={16} color="#FFFFFF" strokeWidth={2.5} />
+                </TouchableOpacity>
+                {recentPhotos.slice(0, 8).map((photo) => {
+                  const isSelected = selectedPhotoIds.has(photo.id);
+                  return (
+                    <TouchableOpacity
+                      key={photo.id}
+                      style={[styles.photoThumbnail, isSelected && styles.photoThumbnailSelected]}
+                      onPress={() => togglePhotoSelection(photo.id)}
+                      activeOpacity={0.7}>
+                      <ExpoImage 
+                        source={{ uri: photo.uri }} 
+                        style={styles.photoImage}
+                        contentFit="cover"
+                      />
+                      {isSelected && (
+                        <View style={styles.photoSelectionBadge} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+
+            <View style={styles.optionsList}>
+              <TouchableOpacity style={styles.optionItem} onPress={() => handleOptionPress(handleTakePhoto)}>
+                <View style={styles.optionIcon}>
+                  <Camera size={24} color="#FFFFFF" />
+                </View>
+                <View style={styles.optionTextContainer}>
+                  <Text style={styles.optionTitle}>Take a photo</Text>
+                  <Text style={styles.optionDescription}>Use your phone to take and upload an image</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.optionItem} onPress={() => handleOptionPress(handleChoosePhoto)}>
+                <View style={styles.optionIcon}>
+                  <ImageUp size={24} color="#FFFFFF" />
+                </View>
+                <View style={styles.optionTextContainer}>
+                  <Text style={styles.optionTitle}>Upload image</Text>
+                  <Text style={styles.optionDescription}>Upload an image from your phone</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.optionItem} onPress={() => handleOptionPress(handleChooseFile)}>
+                <View style={styles.optionIcon}>
+                  <FilePlus size={24} color="#FFFFFF" />
+                </View>
+                <View style={styles.optionTextContainer}>
+                  <Text style={styles.optionTitle}>Upload file</Text>
+                  <Text style={styles.optionDescription}>Upload a file from your phone</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            {selectedPhotoIds.size > 0 && (
+              <TouchableOpacity
+                style={styles.uploadButton}
+                onPress={handleUploadSelected}>
+                <Text style={styles.uploadButtonText}>
+                  Upload {selectedPhotoIds.size} {selectedPhotoIds.size === 1 ? 'image' : 'images'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </BottomSheetView>
+        </BottomSheet>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#010101',
+  },
+  keyboardAvoidingView: {
+    flex: 1,
+  },
+  innerContainer: {
+    flex: 1,
+    backgroundColor: '#010101',
+  },
+  contentContainer: {
+    paddingBottom: 160,
+    paddingHorizontal: 12,
+  },
+  headerText: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 24,
+  },
+  dealCard: {
+    padding: 24,
+    borderRadius: 28,
+    backgroundColor: '#202020',
+    gap: 16,
+  },
+  dealTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  dealMeta: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 24,
+  },
+  dealMetaBlock: {
+    flexShrink: 1,
+    gap: 4,
+  },
+  dealMetaLabel: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 14,
+    letterSpacing: 0.3,
+  },
+  dealMetaValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  alignRight: {
+    textAlign: 'right',
+  },
+  bottomBar: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 40,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(32, 32, 32, 0.5)',
+  },
+  bottomBarFallback: {
+    backgroundColor: 'rgba(32, 32, 32, 0.95)',
+  },
+  addButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addButtonLabel: {
+    fontSize: 24,
+    fontWeight: '600',
+    color: '#010101',
+    position: 'relative',
+    bottom: 1,
+  },
+  searchBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderRadius: 24,
+    borderWidth: 1,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: Platform.OS === 'ios' ? PlatformColor('labelColor') : '#000000',
+    padding: 0,
+  },
+  bottomSheetWrapper: {
+    position: 'absolute',
+    top: 0,
+    left: 6,
+    right: 6,
+    bottom: 0,
+  },
+  bottomSheetBackground: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 96,
+    borderRadius: 48,
+    overflow: 'hidden',
+  },
+  bottomSheetBackgroundFallback: {
+    backgroundColor: 'rgba(28, 28, 30, 0.95)',
+  },
+  bottomSheetIndicator: {
+    backgroundColor: Platform.OS === 'ios' ? PlatformColor('tertiaryLabelColor') : 'rgba(255, 255, 255, 0.3)',
+    width: 40,
+    height: 4,
+  },
+  bottomSheetContent: {
+    flex: 1,
+    paddingHorizontal: 16,
+  },
+  recentPhotosSection: {
+    marginBottom: 16,
+  },
+  photosRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingVertical: 8,
+  },
+  addPhotoButton: {
+    width: 80,
+    height: 80,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addPhotoIcon: {
+    fontSize: 28,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontWeight: '300',
+  },
+  photoThumbnail: {
+    width: 80,
+    height: 80,
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    position: 'relative',
+  },
+  photoThumbnailSelected: {
+    borderColor: '#FFFFFF',
+    borderWidth: 2.5,
+  },
+  photoImage: {
+    width: '100%',
+    height: '100%',
+  },
+  photoPlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  photoSelectionBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#007AFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  openAllPhotos: {
+    alignItems: 'flex-end',
+    paddingBottom: 8,
+  },
+  openAllPhotosText: {
+    color: Platform.OS === 'ios' ? PlatformColor('labelColor') : 'rgba(255, 255, 255, 0.9)',
+    fontSize: 15,
+    textDecorationLine: 'underline',
+  },
+  optionsList: {
+    marginBottom: 12,
+    gap: 2,
+  },
+  optionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    gap: 8,
+  },
+  optionIcon: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: '#FFFFFF',
+  },
+  optionTextContainer: {
+    flex: 1,
+  },
+  optionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Platform.OS === 'ios' ? PlatformColor('labelColor') : '#FFFFFF',
+    marginBottom: 3,
+  },
+  optionDescription: {
+    fontSize: 13,
+    color: Platform.OS === 'ios' ? PlatformColor('secondaryLabelColor') : 'rgba(255, 255, 255, 0.55)',
+    lineHeight: 17,
+  },
+  uploadButton: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  uploadButtonDisabled: {
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  uploadButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+  },
+  uploadingIndicator: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 20,
+    marginBottom: 24,
+  },
+  progressBarContainer: {
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#007AFF',
+    borderRadius: 4,
+  },
+  uploadingText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  vouchersSection: {
+    gap: 12,
+  },
+  voucherWrapper: {
+    // Wrapper for individual vouchers
+  },
+  loadingContainer: {
+    paddingVertical: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  emptyState: {
+    paddingVertical: 60,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyStateTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 8,
+  },
+  emptyStateText: {
+    fontSize: 15,
+    color: 'rgba(255, 255, 255, 0.6)',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 12,
+    letterSpacing: 0.5,
+  },
+  voucherHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  usageGuide: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+    gap: 8,
+  },
+  usageGuideTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.8)',
+    marginBottom: 4,
+  },
+  usageGuideStep: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    lineHeight: 18,
+    paddingLeft: 4,
+  },
+  showVoucherButton: {
+    marginTop: 16,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  showVoucherButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#010101',
+  },
+  // TEST MODE styles
+  testUrlContainer: {
+    marginBottom: 24,
+    padding: 16,
+    backgroundColor: 'rgba(0, 122, 255, 0.1)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 122, 255, 0.3)',
+  },
+  testUrlLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#007AFF',
+    marginBottom: 12,
+    letterSpacing: 0.5,
+  },
+  testUrlInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  testUrlInput: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    fontSize: 14,
+    color: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  testUrlButton: {
+    backgroundColor: '#007AFF',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  testUrlButtonDisabled: {
+    backgroundColor: 'rgba(0, 122, 255, 0.3)',
+  },
+  testUrlButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+});
