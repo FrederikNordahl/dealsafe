@@ -7,7 +7,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import { useShareIntentContext } from 'expo-share-intent';
-import { Camera, FilePlus, ImageUp, Plus, Search } from 'lucide-react-native';
+import { Camera, FilePlus, ImageUp, Plus, Search, User as UserIcon } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ListRenderItem } from 'react-native';
 import {
@@ -17,6 +17,7 @@ import {
   Easing,
   KeyboardAvoidingView,
   Linking,
+  Modal,
   Platform,
   PlatformColor,
   ScrollView,
@@ -28,6 +29,9 @@ import {
   View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import OtpScreen from '../components/auth/OtpScreen';
+import PhoneNumberScreen from '../components/auth/PhoneNumberScreen';
+import { AuthStorage, type User } from '../utils/auth';
 
 const API_URL = 'https://dealsafe-backend.vercel.app';
 
@@ -63,6 +67,14 @@ type Attachment = {
 };
 
 export default function App() {
+  // Auth state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authStep, setAuthStep] = useState<'phone' | 'otp'>('phone');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
+  
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<string>>(new Set());
   const [recentPhotos, setRecentPhotos] = useState<MediaLibrary.Asset[]>([]);
@@ -79,14 +91,96 @@ export default function App() {
   // Refs to prevent duplicate processing of share intents
   const processingShareIntent = useRef(false);
   const lastProcessedShareIntentId = useRef<string | null>(null);
+  const authChecked = useRef(false);
+
+  // Check auth on mount
+  useEffect(() => {
+    if (authChecked.current) return;
+    authChecked.current = true;
+    
+    const checkAuth = async () => {
+      try {
+        const token = await AuthStorage.getToken();
+        const user = await AuthStorage.getUser();
+        
+        if (token && user) {
+          setAuthToken(token);
+          setIsAuthenticated(true);
+        }
+      } catch (error) {
+        console.error('Auth check error:', error);
+      } finally {
+        setIsCheckingAuth(false);
+      }
+    };
+
+    checkAuth();
+  }, []);
+
+  // Auth handlers
+  const handleOtpRequested = useCallback((phone: string) => {
+    setPhoneNumber(phone);
+    setAuthStep('otp');
+  }, []);
+
+  const handleOtpVerified = useCallback(async (token: string, user: User) => {
+    try {
+      await AuthStorage.setToken(token);
+      await AuthStorage.setUser(user);
+      setAuthToken(token);
+      setIsAuthenticated(true);
+    } catch (error) {
+      console.error('Save auth error:', error);
+      Alert.alert('Error', 'Failed to save authentication');
+    }
+  }, []);
+
+  const handleBackToPhone = useCallback(() => {
+    setAuthStep('phone');
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    setShowLogoutModal(true);
+  }, []);
+
+  const confirmLogout = useCallback(async () => {
+    try {
+      await AuthStorage.clear();
+      setIsAuthenticated(false);
+      setAuthToken(null);
+      setAuthStep('phone');
+      setVouchers([]);
+      setShowLogoutModal(false);
+    } catch (error) {
+      console.error('Logout error:', error);
+      Alert.alert('Error', 'Failed to log out');
+    }
+  }, []);
+
+  const cancelLogout = useCallback(() => {
+    setShowLogoutModal(false);
+  }, []);
 
   // Fetch vouchers from API
   const fetchVouchers = useCallback(async () => {
+    if (!authToken) return;
+    
     try {
       setIsLoadingVouchers(true);
-      const response = await fetch(`${API_URL}/api/vouchers?limit=100`);
+      const response = await fetch(`${API_URL}/api/vouchers?limit=100`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
       
       if (!response.ok) {
+        if (response.status === 401) {
+          await AuthStorage.clear();
+          setIsAuthenticated(false);
+          setAuthToken(null);
+          Alert.alert('Session Expired', 'Please login again');
+          return;
+        }
         throw new Error('Failed to fetch vouchers');
       }
 
@@ -97,16 +191,17 @@ export default function App() {
       }
     } catch (error) {
       console.error('Error fetching vouchers:', error);
-      // Don't show alert on initial load failure - just log it
     } finally {
       setIsLoadingVouchers(false);
     }
-  }, []);
+  }, [authToken]);
 
-  // Load vouchers on mount
+  // Load vouchers when authenticated
   useEffect(() => {
-    fetchVouchers();
-  }, [fetchVouchers]);
+    if (isAuthenticated && authToken) {
+      fetchVouchers();
+    }
+  }, [isAuthenticated, authToken, fetchVouchers]);
 
   const startProgressAnimation = useCallback(() => {
     uploadProgress.setValue(0);
@@ -133,6 +228,8 @@ export default function App() {
   }, [uploadProgress]);
 
   const uploadToAPI = useCallback(async (fileUri: string, fileName: string, mimeType?: string) => {
+    if (!authToken) throw new Error('Not authenticated');
+    
     try {
       // Determine the correct MIME type
       let contentType = mimeType || 'image/jpeg';
@@ -209,6 +306,9 @@ export default function App() {
       console.log('Step 1: Uploading file to blob storage...');
       const uploadResponse = await fetch(`${API_URL}/api/vouchers/upload-file`, {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
         body: formData,
       });
 
@@ -227,6 +327,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
         },
         body: JSON.stringify({
           fileUrl: uploadResult.file.url,
@@ -254,9 +355,11 @@ export default function App() {
       console.error('Upload error:', error);
       throw error;
     }
-  }, []);
+  }, [authToken]);
 
   const downloadAndUploadURL = useCallback(async (url: string) => {
+    if (!authToken) throw new Error('Not authenticated');
+    
     try {
       console.log('Step 1: Downloading content from URL:', url);
       
@@ -265,6 +368,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
         },
         body: JSON.stringify({ url }),
       });
@@ -292,7 +396,7 @@ export default function App() {
         throw new Error('Upload failed: Unknown error');
       }
     }
-  }, []);
+  }, [authToken]);
 
   const uploadFiles = useCallback(async (files: Attachment[]) => {
     if (files.length === 0) return;
@@ -797,18 +901,55 @@ export default function App() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#010101" translucent={false} />
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.keyboardAvoidingView}
-        keyboardVerticalOffset={0}>
-        <View style={styles.innerContainer}>
-          <ScrollView
-            contentContainerStyle={[
-              styles.contentContainer,
-              { paddingTop: insets.top + 32 }
-            ]}
-            keyboardShouldPersistTaps="handled">
-            <Text style={styles.headerText}>Your deals</Text>
+      
+      {/* Loading State */}
+      {isCheckingAuth && (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#FFFFFF" />
+        </View>
+      )}
+
+      {/* Auth Screens */}
+      {!isCheckingAuth && !isAuthenticated && (
+        <>
+          {authStep === 'phone' ? (
+            <PhoneNumberScreen 
+              onOtpRequested={handleOtpRequested}
+              apiUrl={API_URL}
+            />
+          ) : (
+            <OtpScreen
+              phoneNumber={phoneNumber}
+              onVerified={handleOtpVerified}
+              onBack={handleBackToPhone}
+              apiUrl={API_URL}
+            />
+          )}
+        </>
+      )}
+
+      {/* Main App */}
+      {!isCheckingAuth && isAuthenticated && (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.keyboardAvoidingView}
+          keyboardVerticalOffset={0}>
+          <View style={styles.innerContainer}>
+            <ScrollView
+              contentContainerStyle={[
+                styles.contentContainer,
+                { paddingTop: insets.top + 16 }
+              ]}
+              keyboardShouldPersistTaps="handled">
+              <View style={styles.headerContainer}>
+                <Text style={styles.headerText}>Your deals</Text>
+                <TouchableOpacity 
+                  style={styles.logoutButton}
+                  onPress={handleLogout}
+                  activeOpacity={0.7}>
+                  <UserIcon size={22} color="#FFFFFF" strokeWidth={2} />
+                </TouchableOpacity>
+              </View>
 
             {isUploading && (
               <View style={styles.uploadingIndicator}>
@@ -855,38 +996,41 @@ export default function App() {
                 ))}
               </View>
             )}
-          </ScrollView>
+            </ScrollView>
 
-          <LiquidGlassView
-            effect="clear"
-            interactive={false}
-            colorScheme="dark"
-            style={[
-              styles.bottomBar,
-              !isLiquidGlassSupported && styles.bottomBarFallback,
-            ]}>
-            <TouchableOpacity style={styles.addButton} onPress={openPickerSheet} activeOpacity={0.8}>
-              <Plus size={16} color="#010101" strokeWidth={2.5} />
-            </TouchableOpacity>
+            <LiquidGlassView
+              effect="clear"
+              interactive={false}
+              colorScheme="dark"
+              style={[
+                styles.bottomBar,
+                !isLiquidGlassSupported && styles.bottomBarFallback,
+              ]}>
+              <TouchableOpacity style={styles.addButton} onPress={openPickerSheet} activeOpacity={0.8}>
+                <Plus size={16} color="#010101" strokeWidth={2.5} />
+              </TouchableOpacity>
 
-            <View style={styles.searchBar}>
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Search deal"
-                placeholderTextColor={'rgba(0, 0, 0, 0.8)'}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-              />
-              <Search 
-                size={20} 
-                color={ 'rgba(0, 0, 0, 0.8)'} 
-                strokeWidth={2}
-              />
-            </View>
-          </LiquidGlassView>
-        </View>
-      </KeyboardAvoidingView>
+              <View style={styles.searchBar}>
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Search deal"
+                  placeholderTextColor={'rgba(0, 0, 0, 0.8)'}
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                />
+                <Search 
+                  size={20} 
+                  color={ 'rgba(0, 0, 0, 0.8)'} 
+                  strokeWidth={2}
+                />
+              </View>
+            </LiquidGlassView>
+          </View>
+        </KeyboardAvoidingView>
+      )}
 
+      {/* Bottom Sheet - Only when authenticated */}
+      {!isCheckingAuth && isAuthenticated && (
         <View style={[styles.bottomSheetWrapper, { paddingBottom: insets.bottom + 8 }]} pointerEvents="box-none">
           <BottomSheet
             ref={bottomSheetRef}
@@ -967,10 +1111,43 @@ export default function App() {
                   Upload {selectedPhotoIds.size} {selectedPhotoIds.size === 1 ? 'image' : 'images'}
                 </Text>
               </TouchableOpacity>
-            )}
-          </BottomSheetView>
-        </BottomSheet>
-      </View>
+              )}
+            </BottomSheetView>
+          </BottomSheet>
+        </View>
+      )}
+
+      {/* Logout Modal */}
+      <Modal
+        visible={showLogoutModal}
+        transparent
+        animationType="fade"
+        onRequestClose={cancelLogout}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Log Out</Text>
+            <Text style={styles.modalMessage}>
+              Are you sure you want to log out?
+            </Text>
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={cancelLogout}
+                activeOpacity={0.8}>
+                <Text style={styles.modalButtonTextCancel}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonLogout]}
+                onPress={confirmLogout}
+                activeOpacity={0.8}>
+                <Text style={styles.modalButtonTextLogout}>Log Out</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -991,11 +1168,25 @@ const styles = StyleSheet.create({
     paddingBottom: 160,
     paddingHorizontal: 12,
   },
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 24,
+    marginTop: 16,
+  },
   headerText: {
     fontSize: 24,
     fontWeight: '700',
     color: '#FFFFFF',
-    marginBottom: 24,
+  },
+  logoutButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#202020',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   dealCard: {
     padding: 24,
@@ -1322,6 +1513,61 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   showVoucherButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#010101',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  modalContent: {
+    backgroundColor: '#202020',
+    borderRadius: 24,
+    padding: 24,
+    width: '100%',
+    maxWidth: 340,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 24,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalButtonCancel: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modalButtonLogout: {
+    backgroundColor: '#FFFFFF',
+  },
+  modalButtonTextCancel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  modalButtonTextLogout: {
     fontSize: 16,
     fontWeight: '600',
     color: '#010101',
