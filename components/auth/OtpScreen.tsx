@@ -1,12 +1,12 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  View,
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
+  View,
 } from 'react-native';
 import type { User } from '../../utils/auth';
 
@@ -30,9 +30,12 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
   const handleOtpChange = (text: string, index: number) => {
     // Only allow digits
     const digits = text.replace(/[^0-9]/g, '');
+
+    console.log('digits', digits);
     
     // Handle paste or multi-character input
     if (digits.length > 1) {
+      console.log('digits', digits);
       // Take first 6 digits and fill from the beginning
       const digitArray = digits.slice(0, 6).split('');
       const newOtp = ['', '', '', '', '', ''];
@@ -142,7 +145,6 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
               onChangeText={(text) => handleOtpChange(text, index)}
               onKeyPress={(e) => handleKeyPress(e, index)}
               keyboardType="number-pad"
-              maxLength={1}
               selectTextOnFocus
               editable={!isLoading}
             />

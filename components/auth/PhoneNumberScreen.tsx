@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import {
-  View,
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
+  View,
 } from 'react-native';
 
 interface PhoneNumberScreenProps {
@@ -20,8 +20,17 @@ export default function PhoneNumberScreen({ onOtpRequested, apiUrl }: PhoneNumbe
 
   const formatPhoneNumber = (text: string) => {
     // Remove all non-digits
-    const digits = text.replace(/\D/g, '');
+    let digits = text.replace(/\D/g, '');
     
+    //Remove coutry code if it exists
+    if (digits.startsWith('45')) {
+      digits = digits.slice(2);
+    }
+
+    if (digits.startsWith('+45')) {
+      digits = digits.slice(3);
+    }
+
     // Limit to 8 digits (Danish phone numbers)
     const limited = digits.slice(0, 8);
     
