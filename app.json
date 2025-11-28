@@ -13,6 +13,7 @@
       "infoPlist": {
         "UIStatusBarStyle": "UIStatusBarStyleLightContent",
         "ITSAppUsesNonExemptEncryption": false,
+        "NSUserNotificationsUsageDescription": "We'll remind you when your vouchers are about to expire.",
         "CFBundleURLTypes": [
           {
             "CFBundleURLSchemes": [
@@ -75,6 +76,14 @@
             "NSExtensionActivationSupportsFileWithMaxCount": 10,
             "NSExtensionActivationSupportsImageWithMaxCount": 10
           }
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#010101",
+          "sounds": []
         }
       ]
     ],

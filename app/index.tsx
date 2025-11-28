@@ -1,11 +1,13 @@
 import { LiquidGlassView, isLiquidGlassSupported } from '@callstack/liquid-glass';
 import type { BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
 import BottomSheet, { BottomSheetBackdrop, BottomSheetView } from '@gorhom/bottom-sheet';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import { Image as ExpoImage } from 'expo-image';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
+import * as Notifications from 'expo-notifications';
 import { useShareIntentContext } from 'expo-share-intent';
 import { Camera, FilePlus, ImageUp, Plus, Search, User as UserIcon } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -74,6 +76,8 @@ export default function App() {
   const [authStep, setAuthStep] = useState<'phone' | 'otp'>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [errorModal, setErrorModal] = useState<{ title: string; message: string } | null>(null);
+  const [showNotificationReminderModal, setShowNotificationReminderModal] = useState(false);
   
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<string>>(new Set());
@@ -143,6 +147,14 @@ export default function App() {
     setShowLogoutModal(true);
   }, []);
 
+  const showError = useCallback((title: string, message: string) => {
+    setErrorModal({ title, message });
+  }, []);
+
+  const closeErrorModal = useCallback(() => {
+    setErrorModal(null);
+  }, []);
+
   const confirmLogout = useCallback(async () => {
     try {
       await AuthStorage.clear();
@@ -153,13 +165,116 @@ export default function App() {
       setShowLogoutModal(false);
     } catch (error) {
       console.error('Logout error:', error);
-      Alert.alert('Error', 'Failed to log out');
+      showError('Error', 'Failed to log out');
     }
-  }, []);
+  }, [showError]);
 
   const cancelLogout = useCallback(() => {
     setShowLogoutModal(false);
   }, []);
+
+  // Notification handling
+  const NOTIFICATION_PERMISSION_ASKED_KEY = 'dealsafe_notification_permission_asked';
+
+  const checkNotificationPermissionAsked = useCallback(async () => {
+    try {
+      const asked = await AsyncStorage.getItem(NOTIFICATION_PERMISSION_ASKED_KEY);
+      return asked === 'true';
+    } catch (error) {
+      console.error('Error checking notification permission asked:', error);
+      return false;
+    }
+  }, []);
+
+  const markNotificationPermissionAsked = useCallback(async () => {
+    try {
+      await AsyncStorage.setItem(NOTIFICATION_PERMISSION_ASKED_KEY, 'true');
+    } catch (error) {
+      console.error('Error marking notification permission asked:', error);
+    }
+  }, []);
+
+  const registerNotificationToken = useCallback(async (token: string) => {
+    if (!authToken) return;
+
+    try {
+      let deviceName = 'Unknown Device';
+      if (Platform.OS === 'ios') {
+        const iosConstants = Platform.constants as any;
+        deviceName = `${iosConstants.systemName || 'iOS'} ${iosConstants.osVersion || ''}`.trim();
+      } else if (Platform.OS === 'android') {
+        const androidConstants = Platform.constants as any;
+        deviceName = `${androidConstants.Brand || 'Android'} ${androidConstants.Release || ''}`.trim();
+      }
+
+      const response = await fetch(`${API_URL}/api/notifications/register-token`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          token,
+          platform: Platform.OS,
+          device_name: deviceName,
+        }),
+      });
+
+      if (!response.ok) {
+        console.error('Failed to register notification token:', response.status);
+      } else {
+        console.log('Notification token registered successfully');
+      }
+    } catch (error) {
+      console.error('Error registering notification token:', error);
+    }
+  }, [authToken]);
+
+  const requestNotificationPermission = useCallback(async () => {
+    try {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      
+      if (existingStatus === 'granted') {
+        // Already granted, get token and register
+        const tokenData = await Notifications.getExpoPushTokenAsync({
+          projectId: '1a59711e-8421-404f-9ea1-0f4a71dbf242',
+        });
+        await registerNotificationToken(tokenData.data);
+        return;
+      }
+
+      // Request permission
+      const { status } = await Notifications.requestPermissionsAsync();
+      
+      if (status === 'granted') {
+        // Get token and register
+        const tokenData = await Notifications.getExpoPushTokenAsync({
+          projectId: '1a59711e-8421-404f-9ea1-0f4a71dbf242',
+        });
+        await registerNotificationToken(tokenData.data);
+      }
+    } catch (error) {
+      console.error('Error requesting notification permission:', error);
+    }
+  }, [registerNotificationToken]);
+
+  const handleNotificationReminderYes = useCallback(async () => {
+    setShowNotificationReminderModal(false);
+    await markNotificationPermissionAsked();
+    await requestNotificationPermission();
+  }, [markNotificationPermissionAsked, requestNotificationPermission]);
+
+  const handleNotificationReminderNo = useCallback(async () => {
+    setShowNotificationReminderModal(false);
+    await markNotificationPermissionAsked();
+  }, [markNotificationPermissionAsked]);
+
+  const showNotificationReminderModalIfNeeded = useCallback(async () => {
+    const hasBeenAsked = await checkNotificationPermissionAsked();
+    if (!hasBeenAsked) {
+      setShowNotificationReminderModal(true);
+    }
+  }, [checkNotificationPermissionAsked]);
 
   // Fetch vouchers from API
   const fetchVouchers = useCallback(async () => {
@@ -337,10 +452,24 @@ export default function App() {
         }),
       });
 
+      console.log('analyzeResponse', analyzeResponse);
+
       if (!analyzeResponse.ok) {
-        const errorText = await analyzeResponse.text();
-        console.error('Analysis failed with status:', analyzeResponse.status, errorText);
-        throw new Error(`Analysis failed: ${errorText}`);
+        let errorData;
+        try {
+          errorData = await analyzeResponse.json();
+        } catch {
+          const errorText = await analyzeResponse.text();
+          console.error('Analysis failed with status:', analyzeResponse.status, errorText);
+          throw new Error(`Analysis failed: ${errorText}`);
+        }
+        
+        console.error('Analysis failed:', errorData);
+        
+        // Create a structured error with message as title and hint as body
+        const error = new Error(errorData.message || 'Analysis failed');
+        (error as any).hint = errorData.hint || '';
+        throw error;
       }
 
       const analyzeResult = await analyzeResponse.json();
@@ -374,9 +503,21 @@ export default function App() {
       });
       
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Upload failed with status:', response.status, errorText);
-        throw new Error(`Upload failed: ${errorText}`);
+        let errorData;
+        try {
+          errorData = await response.json();
+        } catch {
+          const errorText = await response.text();
+          console.error('Upload failed with status:', response.status, errorText);
+          throw new Error(`Upload failed: ${errorText}`);
+        }
+        
+        console.error('Upload failed:', errorData);
+        
+        // Create a structured error with message as title and hint as body
+        const error = new Error(errorData.message || 'Upload failed');
+        (error as any).hint = errorData.hint || '';
+        throw error;
       }
 
       const result = await response.json();
@@ -404,7 +545,7 @@ export default function App() {
     setIsUploading(true);
     startProgressAnimation();
     const uploadedVouchers: Voucher[] = [];
-    const errors: string[] = [];
+    const errors: { name: string; message: string; hint: string }[] = [];
 
     try {
       for (const file of files) {
@@ -412,7 +553,11 @@ export default function App() {
           const voucher = await uploadToAPI(file.uri, file.name, file.type);
           uploadedVouchers.push(voucher);
         } catch (error) {
-          errors.push(`${file.name}: ${(error as Error).message}`);
+          const err = error as any;
+          const title = err.message || 'Upload failed';
+          const hint = err.hint || '';
+          const fullMessage = hint ? `${hint}` : '';
+          errors.push({ name: file.name, message: title, hint: fullMessage });
         }
       }
 
@@ -423,17 +568,23 @@ export default function App() {
         // Refetch all vouchers to get the latest from the API
         await fetchVouchers();
         
-        Alert.alert(
-          'Success',
-          `Successfully uploaded and analyzed ${uploadedVouchers.length} ${uploadedVouchers.length === 1 ? 'voucher' : 'vouchers'}!`
-        );
+        // Show notification reminder modal instead of success alert
+        await showNotificationReminderModalIfNeeded();
       }
 
       if (errors.length > 0) {
-        Alert.alert(
-          'Upload Errors',
-          `Some files failed to upload:\n\n${errors.join('\n')}`
-        );
+        // Show detailed error for single file, or list for multiple
+        if (errors.length === 1) {
+          showError(errors[0].message, errors[0].hint);
+        } else {
+          const errorList = errors.map(e => {
+            if (e.hint) {
+              return `${e.name}:\n${e.message}\n${e.hint}`;
+            }
+            return `${e.name}:\n${e.message}`;
+          }).join('\n\n');
+          showError('Upload Errors', errorList);
+        }
       }
     } finally {
       setTimeout(() => {
@@ -441,7 +592,7 @@ export default function App() {
         resetProgress();
       }, 500);
     }
-  }, [uploadToAPI, fetchVouchers, startProgressAnimation, completeProgress, resetProgress]);
+  }, [uploadToAPI, fetchVouchers, startProgressAnimation, completeProgress, resetProgress, showError, showNotificationReminderModalIfNeeded]);
 
   // Handle shared files/URLs from other apps
   useEffect(() => {
@@ -488,15 +639,19 @@ export default function App() {
         startProgressAnimation();
         
         downloadAndUploadURL(sharedUrl)
-          .then((voucher) => {
+          .then(async (voucher) => {
             completeProgress();
-            setVouchers((prev) => [voucher, ...prev]); 
-            Alert.alert('Success', 'Content downloaded and uploaded successfully!');
+            setVouchers((prev) => [voucher, ...prev]);
+            // Show notification reminder modal instead of success alert
+            await showNotificationReminderModalIfNeeded();
           })
           .catch((err) => {
             resetProgress();
             console.error('Failed to download and upload URL:', err);
-            Alert.alert('Error', 'Failed to download and upload the shared URL. Please try again.');
+            const error = err as any;
+            const title = error.message || 'Upload failed';
+            const hint = error.hint || '';
+            showError(title, hint);
           })
           .finally(() => {
             setIsUploading(false);
@@ -528,7 +683,7 @@ export default function App() {
     } else {
       processingShareIntent.current = false;
     }
-  }, [hasShareIntent, shareIntent, error, resetShareIntent, uploadFiles, downloadAndUploadURL, startProgressAnimation, completeProgress, resetProgress]);
+  }, [hasShareIntent, shareIntent, error, resetShareIntent, uploadFiles, downloadAndUploadURL, startProgressAnimation, completeProgress, resetProgress, showError, showNotificationReminderModalIfNeeded]);
 
   // Convert images to JPEG for better compatibility and smaller file sizes
   const convertImageToJPEG = useCallback(async (uri: string, originalName: string) => {
@@ -1148,6 +1303,59 @@ export default function App() {
           </View>
         </View>
       </Modal>
+
+      {/* Error Modal */}
+      <Modal
+        visible={errorModal !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeErrorModal}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>{errorModal?.title}</Text>
+            <Text style={styles.modalMessage}>{errorModal?.message}</Text>
+            
+            <TouchableOpacity
+              style={[styles.modalButton, styles.modalButtonSingle]}
+              onPress={closeErrorModal}
+              activeOpacity={0.8}>
+              <Text style={styles.modalButtonTextLogout}>OK</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Notification Reminder Modal */}
+      <Modal
+        visible={showNotificationReminderModal}
+        transparent
+        animationType="fade"
+        onRequestClose={handleNotificationReminderNo}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Reminder</Text>
+            <Text style={styles.modalMessage}>
+              Would you like us to remind you when the voucher is about to expire?
+            </Text>
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={handleNotificationReminderNo}
+                activeOpacity={0.8}>
+                <Text style={styles.modalButtonTextCancel}>No</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonLogout]}
+                onPress={handleNotificationReminderYes}
+                activeOpacity={0.8}>
+                <Text style={styles.modalButtonTextLogout}>Yes</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1571,5 +1779,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#010101',
+  },
+  modalButtonSingle: {
+    backgroundColor: '#FFFFFF',
+    marginTop: 8,
   },
 });

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   StyleSheet,
   Text,
   TextInput,
@@ -20,6 +21,8 @@ interface OtpScreenProps {
 export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: OtpScreenProps) {
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [isLoading, setIsLoading] = useState(false);
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [isRequestingNewCode, setIsRequestingNewCode] = useState(false);
   const inputRefs = useRef<(TextInput | null)[]>([]);
 
   useEffect(() => {
@@ -111,18 +114,66 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
       if (response.ok && data.success) {
         onVerified(data.token, data.user);
       } else {
-        Alert.alert('Error', data.message || 'Invalid or expired code');
+        // Show error modal instead of alert
+        setShowErrorModal(true);
         // Clear OTP inputs
         setOtp(['', '', '', '', '', '']);
-        inputRefs.current[0]?.focus();
       }
     } catch (error) {
       console.error('Verify OTP error:', error);
-      Alert.alert('Error', 'Failed to verify code. Please try again.');
+      // Show error modal instead of alert
+      setShowErrorModal(true);
       setOtp(['', '', '', '', '', '']);
-      inputRefs.current[0]?.focus();
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleTryAgain = () => {
+    setShowErrorModal(false);
+    inputRefs.current[0]?.focus();
+  };
+
+  const handleRequestNewCode = async () => {
+    setIsRequestingNewCode(true);
+    setShowErrorModal(false);
+    
+    try {
+      const response = await fetch(`${apiUrl}/api/auth/request-otp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phone_number: phoneNumber,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        // Clear OTP inputs
+        setOtp(['', '', '', '', '', '']);
+        inputRefs.current[0]?.focus();
+        
+        // Show development code if available (non-blocking)
+        if (data.code && __DEV__) {
+          setTimeout(() => {
+            Alert.alert(
+              'Development Code',
+              `Your new OTP code is: ${data.code}`,
+              [{ text: 'OK' }]
+            );
+          }, 500);
+        }
+      } else {
+        Alert.alert('Error', data.message || 'Failed to send new OTP code');
+      }
+    } catch (error) {
+      console.error('Request new OTP error:', error);
+      Alert.alert('Error', 'Failed to send new OTP code. Please try again.');
+    } finally {
+      setIsRequestingNewCode(false);
     }
   };
 
@@ -166,11 +217,48 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
         <TouchableOpacity
           style={styles.backButton}
           onPress={onBack}
-          disabled={isLoading}
+          disabled={isLoading || isRequestingNewCode}
           activeOpacity={0.7}>
           <Text style={styles.backButtonText}>Change phone number</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Error Modal */}
+      <Modal
+        visible={showErrorModal}
+        transparent
+        animationType="fade"
+        onRequestClose={handleTryAgain}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Fejl</Text>
+            <Text style={styles.modalMessage}>
+              Koden er forkert, eller udløbt
+            </Text>
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={handleTryAgain}
+                activeOpacity={0.8}>
+                <Text style={styles.modalButtonTextCancel}>Prøv igen</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonPrimary]}
+                onPress={handleRequestNewCode}
+                disabled={isRequestingNewCode}
+                activeOpacity={0.8}>
+                {isRequestingNewCode ? (
+                  <ActivityIndicator color="#010101" />
+                ) : (
+                  <Text style={styles.modalButtonTextPrimary}>Anmod om ny kode</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -250,6 +338,64 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: 'rgba(255, 255, 255, 0.7)',
     textDecorationLine: 'underline',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  modalContent: {
+    backgroundColor: '#202020',
+    borderRadius: 24,
+    padding: 24,
+    width: '100%',
+    maxWidth: 340,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 24,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  modalButton: {
+    flex: 1,
+    minHeight: 48,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalButtonCancel: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modalButtonPrimary: {
+    backgroundColor: '#FFFFFF',
+  },
+  modalButtonTextCancel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  modalButtonTextPrimary: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#010101',
+    textAlign: 'center',
   },
 });
 
