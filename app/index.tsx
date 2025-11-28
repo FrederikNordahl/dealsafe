@@ -9,7 +9,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as Notifications from 'expo-notifications';
 import { useShareIntentContext } from 'expo-share-intent';
-import { Camera, FilePlus, ImageUp, Plus, Search, User as UserIcon } from 'lucide-react-native';
+import { Archive, Camera, FilePlus, ImageUp, Plus, Search, Trash2, User as UserIcon } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ListRenderItem } from 'react-native';
 import {
@@ -30,6 +30,7 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import OtpScreen from '../components/auth/OtpScreen';
 import PhoneNumberScreen from '../components/auth/PhoneNumberScreen';
@@ -310,6 +311,71 @@ export default function App() {
       setIsLoadingVouchers(false);
     }
   }, [authToken]);
+
+  // Mark voucher as used
+  const markVoucherAsUsed = useCallback(async (voucherId: number) => {
+    if (!authToken) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/vouchers/${voucherId}/mark-used`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          await AuthStorage.clear();
+          setIsAuthenticated(false);
+          setAuthToken(null);
+          Alert.alert('Session Expired', 'Please login again');
+          return;
+        }
+        throw new Error('Failed to mark voucher as used');
+      }
+
+      // Refresh vouchers list
+      await fetchVouchers();
+    } catch (error) {
+      console.error('Error marking voucher as used:', error);
+      Alert.alert('Error', 'Failed to mark voucher as used');
+    }
+  }, [authToken, fetchVouchers]);
+
+  // Delete voucher
+  const deleteVoucher = useCallback(async (voucherId: number) => {
+    if (!authToken) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/vouchers/${voucherId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          await AuthStorage.clear();
+          setIsAuthenticated(false);
+          setAuthToken(null);
+          Alert.alert('Session Expired', 'Please login again');
+          return;
+        }
+        throw new Error('Failed to delete voucher');
+      }
+
+      // Remove from local state immediately for better UX
+      setVouchers((prev) => prev.filter((v) => v.id !== voucherId));
+    } catch (error) {
+      console.error('Error deleting voucher:', error);
+      Alert.alert('Error', 'Failed to delete voucher');
+      // Refresh vouchers list on error
+      await fetchVouchers();
+    }
+  }, [authToken, fetchVouchers]);
 
   // Load vouchers when authenticated
   useEffect(() => {
@@ -977,6 +1043,78 @@ export default function App() {
     }
   }, []);
 
+  // Render swipe actions (archive and delete)
+  const renderRightActions = useCallback((item: Voucher, progress: Animated.AnimatedInterpolation<number>) => {
+    // Archive appears first (green)
+    const archiveTrans = progress.interpolate({
+      inputRange: [0, 0.5, 1],
+      outputRange: [100, 100, 0],
+    });
+
+    // Delete appears after archive (red)
+    const deleteTrans = progress.interpolate({
+      inputRange: [0, 0.5, 1],
+      outputRange: [100, 0, 0],
+    });
+
+    return (
+      <View style={styles.swipeActionsContainer}>
+        {/* Archive action (green) - appears first */}
+        <Animated.View
+          style={[
+            styles.swipeAction,
+            styles.swipeActionArchive,
+            {
+              transform: [{ translateX: archiveTrans }],
+            },
+          ]}>
+          <TouchableOpacity
+            style={styles.swipeActionButton}
+            onPress={async () => {
+              await markVoucherAsUsed(item.id);
+            }}
+            activeOpacity={0.8}>
+            <Archive size={24} color="#FFFFFF" strokeWidth={2} />
+            <Text style={styles.swipeActionText}>Markér som brugt</Text>
+          </TouchableOpacity>
+        </Animated.View>
+
+        {/* Delete action (red) - appears when swiping more */}
+        <Animated.View
+          style={[
+            styles.swipeAction,
+            styles.swipeActionDelete,
+            {
+              transform: [{ translateX: deleteTrans }],
+            },
+          ]}>
+          <TouchableOpacity
+            style={styles.swipeActionButton}
+            onPress={async () => {
+              Alert.alert(
+                'Delete Voucher',
+                'Are you sure you want to delete this voucher?',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: async () => {
+                      await deleteVoucher(item.id);
+                    },
+                  },
+                ]
+              );
+            }}
+            activeOpacity={0.8}>
+            <Trash2 size={24} color="#FFFFFF" strokeWidth={2} />
+            <Text style={styles.swipeActionText}>Slet</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      </View>
+    );
+  }, [markVoucherAsUsed, deleteVoucher]);
+
   const renderVoucher = useCallback<ListRenderItem<Voucher>>(({ item }) => {
     const redemptionText = item.redemption_value 
       ? `${item.redemption_method?.toUpperCase()}: ${item.redemption_value}`
@@ -985,11 +1123,15 @@ export default function App() {
     const isExpanded = expandedVoucherId === item.id;
 
     return (
-      <TouchableOpacity 
-        style={styles.dealCard} 
-        onPress={() => toggleVoucherExpansion(item.id)}
-        activeOpacity={0.7}
-      >
+      <Swipeable
+        renderRightActions={(progress) => renderRightActions(item, progress)}
+        rightThreshold={40}
+        overshootRight={false}>
+        <TouchableOpacity 
+          style={styles.dealCard} 
+          onPress={() => toggleVoucherExpansion(item.id)}
+          activeOpacity={0.7}
+        >
         <View style={styles.voucherHeader}>
           <Text style={styles.dealTitle} numberOfLines={isExpanded ? undefined : 2}>
             {item.description || item.original_filename}
@@ -1050,8 +1192,9 @@ export default function App() {
           </>
         )}
       </TouchableOpacity>
+      </Swipeable>
     );
-  }, [formatDate, expandedVoucherId, toggleVoucherExpansion, openVoucherUrl]);
+  }, [formatDate, expandedVoucherId, toggleVoucherExpansion, openVoucherUrl, renderRightActions]);
 
   return (
     <View style={styles.container}>
@@ -1783,5 +1926,38 @@ const styles = StyleSheet.create({
   modalButtonSingle: {
     backgroundColor: '#FFFFFF',
     marginTop: 8,
+  },
+  swipeActionsContainer: {
+    flexDirection: 'row',
+    width: 200,
+    marginLeft: 12,
+    gap: 8,
+  },
+  swipeAction: {
+    width: 96,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 28,
+    overflow: 'hidden',
+  },
+  swipeActionArchive: {
+    backgroundColor: '#202020',
+  },
+  swipeActionDelete: {
+    backgroundColor: '#FF3B30',
+  },
+  swipeActionButton: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 20,
+    gap: 8,
+  },
+  swipeActionText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
   },
 });
