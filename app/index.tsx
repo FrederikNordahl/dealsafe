@@ -1126,11 +1126,12 @@ export default function App() {
       <Swipeable
         renderRightActions={(progress) => renderRightActions(item, progress)}
         rightThreshold={40}
-        overshootRight={false}>
+        overshootRight={false}
+        containerStyle={{ opacity: 1 }}>
         <TouchableOpacity 
           style={styles.dealCard} 
           onPress={() => toggleVoucherExpansion(item.id)}
-          activeOpacity={0.7}
+          activeOpacity={1}
         >
         <View style={styles.voucherHeader}>
           <Text style={styles.dealTitle} numberOfLines={isExpanded ? undefined : 2}>
