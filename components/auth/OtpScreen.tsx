@@ -231,9 +231,9 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
         onRequestClose={handleTryAgain}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Fejl</Text>
+            <Text style={styles.modalTitle}>Error</Text>
             <Text style={styles.modalMessage}>
-              Koden er forkert, eller udløbt
+              The code is incorrect or expired
             </Text>
             
             <View style={styles.modalButtons}>
@@ -241,7 +241,7 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
                 style={[styles.modalButton, styles.modalButtonCancel]}
                 onPress={handleTryAgain}
                 activeOpacity={0.8}>
-                <Text style={styles.modalButtonTextCancel}>Prøv igen</Text>
+                <Text style={styles.modalButtonTextCancel}>Try again</Text>
               </TouchableOpacity>
               
               <TouchableOpacity
@@ -252,7 +252,7 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
                 {isRequestingNewCode ? (
                   <ActivityIndicator color="#010101" />
                 ) : (
-                  <Text style={styles.modalButtonTextPrimary}>Anmod om ny kode</Text>
+                  <Text style={styles.modalButtonTextPrimary}>Request new code</Text>
                 )}
               </TouchableOpacity>
             </View>

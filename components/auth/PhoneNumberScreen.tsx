@@ -1,3 +1,4 @@
+import { openBrowserAsync, WebBrowserPresentationStyle } from 'expo-web-browser';
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
@@ -107,6 +108,12 @@ export default function PhoneNumberScreen({ onOtpRequested, apiUrl }: PhoneNumbe
     }
   };
 
+  const handleOpenLink = async (url: string) => {
+    await openBrowserAsync(url, {
+      presentationStyle: WebBrowserPresentationStyle.AUTOMATIC,
+    });
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.content}>
@@ -145,6 +152,17 @@ export default function PhoneNumberScreen({ onOtpRequested, apiUrl }: PhoneNumbe
             <Text style={styles.buttonText}>Continue</Text>
           )}
         </TouchableOpacity>
+
+        <Text style={styles.termsText}>
+          By signing up, you agree to our{' '}
+          <Text style={styles.linkText} onPress={() => handleOpenLink('https://www.dealsafe.dk/terms-of-service')}>
+            Terms of Service
+          </Text>
+          {' '}and acknowledge our{' '}
+          <Text style={styles.linkText} onPress={() => handleOpenLink('https://www.dealsafe.dk/privacy-policy')}>
+            Privacy Policy
+          </Text>
+        </Text>
 
         <Text style={styles.disclaimer}>
           We'll send you a 6-digit verification code via SMS
@@ -222,6 +240,19 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '600',
     color: '#010101',
+  },
+  termsText: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.6)',
+    textAlign: 'center',
+    lineHeight: 18,
+    marginTop: 8,
+    paddingHorizontal: 16,
+  },
+  linkText: {
+    color: '#FFFFFF',
+    textDecorationLine: 'underline',
+    fontWeight: '500',
   },
   disclaimer: {
     fontSize: 14,
