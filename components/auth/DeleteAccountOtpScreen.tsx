@@ -9,36 +9,82 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import type { User } from '../../utils/auth';
 
-interface OtpScreenProps {
+interface DeleteAccountOtpScreenProps {
   phoneNumber: string;
-  onVerified: (token: string, user: User) => void;
-  onBack: () => void;
+  onVerified: () => void;
+  onCancel: () => void;
   apiUrl: string;
+  authToken: string;
 }
 
-export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: OtpScreenProps) {
+export default function DeleteAccountOtpScreen({
+  phoneNumber,
+  onVerified,
+  onCancel,
+  apiUrl,
+  authToken,
+}: DeleteAccountOtpScreenProps) {
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [isLoading, setIsLoading] = useState(false);
   const [showErrorModal, setShowErrorModal] = useState(false);
   const [isRequestingNewCode, setIsRequestingNewCode] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
   const inputRefs = useRef<(TextInput | null)[]>([]);
 
   useEffect(() => {
     // Focus first input on mount
     inputRefs.current[0]?.focus();
+    // Request OTP on mount
+    requestOtp();
   }, []);
+
+  const requestOtp = async () => {
+    setIsRequestingNewCode(true);
+    
+    try {
+      const response = await fetch(`${apiUrl}/api/auth/delete-account`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        // Show development code if available (non-blocking)
+        if (data.code && __DEV__) {
+          setTimeout(() => {
+            Alert.alert(
+              'Development Code',
+              `Your OTP code is: ${data.code}`,
+              [{ text: 'OK' }]
+            );
+          }, 500);
+        }
+      } else {
+        // Display server error message, especially for 429 rate limit errors
+        const errorMessage = data.message || data.error || 'Failed to send verification code';
+        setErrorMessage(errorMessage);
+        setShowErrorModal(true);
+      }
+    } catch (error) {
+      console.error('Request OTP error:', error);
+      setErrorMessage('Failed to send verification code. Please try again.');
+      setShowErrorModal(true);
+    } finally {
+      setIsRequestingNewCode(false);
+    }
+  };
 
   const handleOtpChange = (text: string, index: number) => {
     // Only allow digits
     const digits = text.replace(/[^0-9]/g, '');
 
-    console.log('digits', digits);
-    
     // Handle paste or multi-character input
     if (digits.length > 1) {
-      console.log('digits', digits);
       // Take first 6 digits and fill from the beginning
       const digitArray = digits.slice(0, 6).split('');
       const newOtp = ['', '', '', '', '', ''];
@@ -98,30 +144,28 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${apiUrl}/api/auth/verify-otp`, {
+      const response = await fetch(`${apiUrl}/api/auth/delete-account`, {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          phone_number: phoneNumber,
-          code: otpCode,
-        }),
+        body: JSON.stringify({ code: otpCode }),
       });
 
       const data = await response.json();
 
       if (response.ok && data.success) {
-        onVerified(data.token, data.user);
+        onVerified();
       } else {
-        // Show error modal instead of alert
+        setErrorMessage(data.message || 'Invalid or expired OTP code');
         setShowErrorModal(true);
         // Clear OTP inputs
         setOtp(['', '', '', '', '', '']);
       }
     } catch (error) {
       console.error('Verify OTP error:', error);
-      // Show error modal instead of alert
+      setErrorMessage('Failed to verify code. Please try again.');
       setShowErrorModal(true);
       setOtp(['', '', '', '', '', '']);
     } finally {
@@ -131,64 +175,28 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
 
   const handleTryAgain = () => {
     setShowErrorModal(false);
+    setErrorMessage('');
     inputRefs.current[0]?.focus();
   };
 
   const handleRequestNewCode = async () => {
-    setIsRequestingNewCode(true);
+    await requestOtp();
     setShowErrorModal(false);
-    
-    try {
-      const response = await fetch(`${apiUrl}/api/auth/request-otp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          phone_number: phoneNumber,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        // Clear OTP inputs
-        setOtp(['', '', '', '', '', '']);
-        inputRefs.current[0]?.focus();
-        
-        // Show development code if available (non-blocking)
-        if (data.code && __DEV__) {
-          setTimeout(() => {
-            Alert.alert(
-              'Development Code',
-              `Your new OTP code is: ${data.code}`,
-              [{ text: 'OK' }]
-            );
-          }, 500);
-        }
-      } else {
-        // Display server error message, especially for 429 rate limit errors
-        const errorMessage = data.message || data.error || 'Failed to send new OTP code';
-        Alert.alert(
-          response.status === 429 ? 'Rate Limit Exceeded' : 'Error',
-          errorMessage
-        );
-      }
-    } catch (error) {
-      console.error('Request new OTP error:', error);
-      Alert.alert('Error', 'Failed to send new OTP code. Please try again.');
-    } finally {
-      setIsRequestingNewCode(false);
-    }
+    setErrorMessage('');
+    setOtp(['', '', '', '', '', '']);
+    inputRefs.current[0]?.focus();
   };
 
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        <Text style={styles.title}>Enter verification code</Text>
+        <Text style={styles.title}>Verify account deletion</Text>
         <Text style={styles.subtitle}>
-          We sent a 6-digit code to{'\n'}
+          We sent a 6-digit verification code to{'\n'}
           <Text style={styles.phoneNumber}>{phoneNumber}</Text>
+        </Text>
+        <Text style={styles.warningText}>
+          ⚠️ This action cannot be undone. All your data will be permanently deleted.
         </Text>
 
         <View style={styles.otpContainer}>
@@ -202,29 +210,29 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
               onKeyPress={(e) => handleKeyPress(e, index)}
               keyboardType="number-pad"
               selectTextOnFocus
-              editable={!isLoading}
+              editable={!isLoading && !isRequestingNewCode}
             />
           ))}
         </View>
 
         <TouchableOpacity
-          style={[styles.button, isLoading && styles.buttonDisabled]}
+          style={[styles.button, (isLoading || isRequestingNewCode) && styles.buttonDisabled]}
           onPress={() => handleVerifyOtp()}
-          disabled={isLoading}
+          disabled={isLoading || isRequestingNewCode}
           activeOpacity={0.8}>
           {isLoading ? (
             <ActivityIndicator color="#010101" />
           ) : (
-            <Text style={styles.buttonText}>Verify</Text>
+            <Text style={styles.buttonText}>Verify and Delete</Text>
           )}
         </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.backButton}
-          onPress={onBack}
+          onPress={onCancel}
           disabled={isLoading || isRequestingNewCode}
           activeOpacity={0.7}>
-          <Text style={styles.backButtonText}>Change phone number</Text>
+          <Text style={styles.backButtonText}>Cancel</Text>
         </TouchableOpacity>
       </View>
 
@@ -238,7 +246,7 @@ export default function OtpScreen({ phoneNumber, onVerified, onBack, apiUrl }: O
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Error</Text>
             <Text style={styles.modalMessage}>
-              The code is incorrect or expired
+              {errorMessage || 'The code is incorrect or expired'}
             </Text>
             
             <View style={styles.modalButtons}>
@@ -289,12 +297,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: 'rgba(255, 255, 255, 0.7)',
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 8,
     lineHeight: 24,
   },
   phoneNumber: {
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  warningText: {
+    fontSize: 14,
+    color: '#FF3B30',
+    textAlign: 'center',
+    marginBottom: 8,
+    lineHeight: 20,
   },
   otpContainer: {
     flexDirection: 'row',
@@ -320,7 +335,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2A2A2A',
   },
   button: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FF3B30',
     borderRadius: 24,
     paddingVertical: 18,
     alignItems: 'center',
@@ -333,7 +348,7 @@ const styles = StyleSheet.create({
   buttonText: {
     fontSize: 17,
     fontWeight: '600',
-    color: '#010101',
+    color: '#FFFFFF',
   },
   backButton: {
     paddingVertical: 12,

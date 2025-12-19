@@ -1,13 +1,13 @@
 import { openBrowserAsync, WebBrowserPresentationStyle } from 'expo-web-browser';
 import React, { useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 
 interface PhoneNumberScreenProps {
@@ -98,7 +98,12 @@ export default function PhoneNumberScreen({ onOtpRequested, apiUrl }: PhoneNumbe
           }, 500);
         }
       } else {
-        Alert.alert('Error', data.message || 'Failed to send OTP code');
+        // Display server error message, especially for 429 rate limit errors
+        const errorMessage = data.message || data.error || 'Failed to send OTP code';
+        Alert.alert(
+          response.status === 429 ? 'Rate Limit Exceeded' : 'Error',
+          errorMessage
+        );
       }
     } catch (error) {
       console.error('Request OTP error:', error);
@@ -165,7 +170,7 @@ export default function PhoneNumberScreen({ onOtpRequested, apiUrl }: PhoneNumbe
         </Text>
 
         <Text style={styles.disclaimer}>
-          We'll send you a 6-digit verification code via SMS
+          We&apos;ll send you a 6-digit verification code via SMS
         </Text>
       </View>
     </View>

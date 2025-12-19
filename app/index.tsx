@@ -9,7 +9,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as Notifications from 'expo-notifications';
 import { useShareIntentContext } from 'expo-share-intent';
-import { Archive, Camera, FilePlus, ImageUp, Plus, Search, Trash2, User as UserIcon } from 'lucide-react-native';
+import { Archive, Camera, FilePlus, ImageUp, Plus, Trash2, User as UserIcon } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ListRenderItem } from 'react-native';
 import {
@@ -26,12 +26,12 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import DeleteAccountOtpScreen from '../components/auth/DeleteAccountOtpScreen';
 import OtpScreen from '../components/auth/OtpScreen';
 import PhoneNumberScreen from '../components/auth/PhoneNumberScreen';
 import { AuthStorage, type User } from '../utils/auth';
@@ -60,6 +60,7 @@ type Voucher = {
   usage_guide: UsageGuide | null;
   created_at: string;
   updated_at: string;
+  state: string;
 };
 
 type Attachment = {
@@ -77,6 +78,9 @@ export default function App() {
   const [authStep, setAuthStep] = useState<'phone' | 'otp'>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [showDeleteAccountConfirmation, setShowDeleteAccountConfirmation] = useState(false);
+  const [showDeleteAccountOtp, setShowDeleteAccountOtp] = useState(false);
+  const [userPhoneNumber, setUserPhoneNumber] = useState<string>('');
   const [errorModal, setErrorModal] = useState<{ title: string; message: string } | null>(null);
   const [showNotificationReminderModal, setShowNotificationReminderModal] = useState(false);
   
@@ -111,6 +115,7 @@ export default function App() {
         if (token && user) {
           setAuthToken(token);
           setIsAuthenticated(true);
+          setUserPhoneNumber(user.phone_number || '');
         }
       } catch (error) {
         console.error('Auth check error:', error);
@@ -134,6 +139,7 @@ export default function App() {
       await AuthStorage.setUser(user);
       setAuthToken(token);
       setIsAuthenticated(true);
+      setUserPhoneNumber(user.phone_number || '');
     } catch (error) {
       console.error('Save auth error:', error);
       Alert.alert('Error', 'Failed to save authentication');
@@ -172,6 +178,36 @@ export default function App() {
 
   const cancelLogout = useCallback(() => {
     setShowLogoutModal(false);
+  }, []);
+
+  const handleDeleteAccountPress = useCallback(() => {
+    setShowLogoutModal(false);
+    setShowDeleteAccountConfirmation(true);
+  }, []);
+
+  const confirmDeleteAccount = useCallback(() => {
+    // Close confirmation modal and show OTP screen
+    setShowDeleteAccountConfirmation(false);
+    setShowDeleteAccountOtp(true);
+  }, []);
+
+  const cancelDeleteAccount = useCallback(() => {
+    setShowDeleteAccountConfirmation(false);
+  }, []);
+
+  const handleAccountDeleted = useCallback(async () => {
+    // Clear local storage and reset state
+    await AuthStorage.clear();
+    setIsAuthenticated(false);
+    setAuthToken(null);
+    setAuthStep('phone');
+    setVouchers([]);
+    setShowDeleteAccountOtp(false);
+    Alert.alert('Account Deleted', 'Your account has been successfully deleted');
+  }, []);
+
+  const cancelDeleteAccountOtp = useCallback(() => {
+    setShowDeleteAccountOtp(false);
   }, []);
 
   // Notification handling
@@ -1075,7 +1111,7 @@ export default function App() {
             }}
             activeOpacity={0.8}>
             <Archive size={24} color="#FFFFFF" strokeWidth={2} />
-            <Text style={styles.swipeActionText}>Markér som brugt</Text>
+            <Text style={styles.swipeActionText}>Mark as used</Text>
           </TouchableOpacity>
         </Animated.View>
 
@@ -1108,7 +1144,7 @@ export default function App() {
             }}
             activeOpacity={0.8}>
             <Trash2 size={24} color="#FFFFFF" strokeWidth={2} />
-            <Text style={styles.swipeActionText}>Slet</Text>
+            <Text style={styles.swipeActionText}>Delete</Text>
           </TouchableOpacity>
         </Animated.View>
       </View>
@@ -1227,8 +1263,19 @@ export default function App() {
         </>
       )}
 
+      {/* Delete Account OTP Screen */}
+      {!isCheckingAuth && isAuthenticated && showDeleteAccountOtp && authToken && (
+        <DeleteAccountOtpScreen
+          phoneNumber={userPhoneNumber}
+          onVerified={handleAccountDeleted}
+          onCancel={cancelDeleteAccountOtp}
+          apiUrl={API_URL}
+          authToken={authToken}
+        />
+      )}
+
       {/* Main App */}
-      {!isCheckingAuth && isAuthenticated && (
+      {!isCheckingAuth && isAuthenticated && !showDeleteAccountOtp && (
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.keyboardAvoidingView}
@@ -1286,15 +1333,34 @@ export default function App() {
               </View>
             )}
 
-            {vouchers.length > 0 && (
-              <View style={styles.vouchersSection}>
-                {vouchers.map((voucher) => (
-                  <View key={voucher.id} style={styles.voucherWrapper}>
-                    {renderVoucher({ item: voucher, index: 0, separators: {} as any })}
-                  </View>
-                ))}
-              </View>
-            )}
+            {vouchers.length > 0 && (() => {
+              // Group vouchers into unused and used
+              const unusedVouchers = vouchers.filter(v => v.state !== 'used');
+              const usedVouchers = vouchers.filter(v => v.state === 'used');
+              
+              return (
+                <View style={styles.vouchersSection}>
+                  {/* Unused vouchers */}
+                  {unusedVouchers.map((voucher) => (
+                    <View key={voucher.id} style={styles.voucherWrapper}>
+                      {renderVoucher({ item: voucher, index: 0, separators: {} as any })}
+                    </View>
+                  ))}
+                  
+                  {/* Used vouchers with headline */}
+                  {usedVouchers.length > 0 && (
+                    <>
+                      <Text style={styles.sectionTitle}>Used</Text>
+                      {usedVouchers.map((voucher) => (
+                        <View key={voucher.id} style={styles.voucherWrapper}>
+                          {renderVoucher({ item: voucher, index: 0, separators: {} as any })}
+                        </View>
+                      ))}
+                    </>
+                  )}
+                </View>
+              );
+            })()}
             </ScrollView>
 
             <LiquidGlassView
@@ -1309,7 +1375,7 @@ export default function App() {
                 <Plus size={16} color="#010101" strokeWidth={2.5} />
               </TouchableOpacity>
 
-              <View style={styles.searchBar}>
+              {/* <View style={styles.searchBar}>
                 <TextInput
                   style={styles.searchInput}
                   placeholder="Search deal"
@@ -1322,7 +1388,7 @@ export default function App() {
                   color={ 'rgba(0, 0, 0, 0.8)'} 
                   strokeWidth={2}
                 />
-              </View>
+              </View> */}
             </LiquidGlassView>
           </View>
         </KeyboardAvoidingView>
@@ -1416,7 +1482,7 @@ export default function App() {
         </View>
       )}
 
-      {/* Logout Modal */}
+      {/* Account Options Modal */}
       <Modal
         visible={showLogoutModal}
         transparent
@@ -1424,24 +1490,63 @@ export default function App() {
         onRequestClose={cancelLogout}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Log Out</Text>
+            <Text style={styles.modalTitle}>Account</Text>
             <Text style={styles.modalMessage}>
-              Are you sure you want to log out?
+              Choose an option
             </Text>
             
-            <View style={styles.modalButtons}>
+            <View style={styles.modalButtonsVertical}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonLogout]}
+                onPress={confirmLogout}
+                activeOpacity={0.8}>
+                <Text style={styles.modalButtonTextLogout}>Log Out</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonDelete]}
+                onPress={handleDeleteAccountPress}
+                activeOpacity={0.8}>
+                <Text style={styles.modalButtonTextDelete}>Delete Account</Text>
+              </TouchableOpacity>
+              
               <TouchableOpacity
                 style={[styles.modalButton, styles.modalButtonCancel]}
                 onPress={cancelLogout}
                 activeOpacity={0.8}>
                 <Text style={styles.modalButtonTextCancel}>Cancel</Text>
               </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete Account Confirmation Modal */}
+      <Modal
+        visible={showDeleteAccountConfirmation}
+        transparent
+        animationType="fade"
+        onRequestClose={cancelDeleteAccount}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Delete Account</Text>
+            <Text style={styles.modalMessage}>
+              Are you sure you want to delete your account? This action cannot be undone and all your vouchers will be permanently deleted.
+            </Text>
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={cancelDeleteAccount}
+                activeOpacity={0.8}>
+                <Text style={styles.modalButtonTextCancel}>Cancel</Text>
+              </TouchableOpacity>
               
               <TouchableOpacity
-                style={[styles.modalButton, styles.modalButtonLogout]}
-                onPress={confirmLogout}
+                style={[styles.modalButton, styles.modalButtonDelete]}
+                onPress={confirmDeleteAccount}
                 activeOpacity={0.8}>
-                <Text style={styles.modalButtonTextLogout}>Log Out</Text>
+                <Text style={styles.modalButtonTextDelete}>Delete Account</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1575,8 +1680,8 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     position: 'absolute',
-    left: 12,
-    right: 12,
+    left: "50%",
+    transform: [{ translateX: "-50%" }],
     bottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1901,6 +2006,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
   },
+  modalButtonsVertical: {
+    flexDirection: 'column',
+    gap: 12,
+  },
   modalButton: {
     flex: 1,
     paddingVertical: 14,
@@ -1914,6 +2023,9 @@ const styles = StyleSheet.create({
   modalButtonLogout: {
     backgroundColor: '#FFFFFF',
   },
+  modalButtonDelete: {
+    backgroundColor: '#FF3B30',
+  },
   modalButtonTextCancel: {
     fontSize: 16,
     fontWeight: '600',
@@ -1923,6 +2035,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#010101',
+  },
+  modalButtonTextDelete: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
   modalButtonSingle: {
     backgroundColor: '#FFFFFF',
