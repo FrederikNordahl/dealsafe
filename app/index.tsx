@@ -1497,21 +1497,21 @@ export default function App() {
             
             <View style={styles.modalButtonsVertical}>
               <TouchableOpacity
-                style={[styles.modalButton, styles.modalButtonLogout]}
+                style={[styles.modalButton, styles.modalButtonVertical, styles.modalButtonLogout]}
                 onPress={confirmLogout}
                 activeOpacity={0.8}>
                 <Text style={styles.modalButtonTextLogout}>Log Out</Text>
               </TouchableOpacity>
               
               <TouchableOpacity
-                style={[styles.modalButton, styles.modalButtonDelete]}
+                style={[styles.modalButton, styles.modalButtonVertical, styles.modalButtonDelete]}
                 onPress={handleDeleteAccountPress}
                 activeOpacity={0.8}>
                 <Text style={styles.modalButtonTextDelete}>Delete Account</Text>
               </TouchableOpacity>
               
               <TouchableOpacity
-                style={[styles.modalButton, styles.modalButtonCancel]}
+                style={[styles.modalButton, styles.modalButtonVertical, styles.modalButtonCancel]}
                 onPress={cancelLogout}
                 activeOpacity={0.8}>
                 <Text style={styles.modalButtonTextCancel}>Cancel</Text>
@@ -2016,6 +2016,11 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 48,
+  },
+  modalButtonVertical: {
+    flex: 0,
+    width: '100%',
   },
   modalButtonCancel: {
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
@@ -2030,16 +2035,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+    textAlign: 'center',
+    includeFontPadding: false,
   },
   modalButtonTextLogout: {
     fontSize: 16,
     fontWeight: '600',
     color: '#010101',
+    textAlign: 'center',
+    includeFontPadding: false,
   },
   modalButtonTextDelete: {
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+    textAlign: 'center',
+    includeFontPadding: false,
   },
   modalButtonSingle: {
     backgroundColor: '#FFFFFF',
